@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>网页端火烧云预报系统</title>
+  <title>Sohp的火烧云预报系统</title>
   <link rel="icon" type="image/jpeg" href="icon.jpg" />
   <link rel="apple-touch-icon" href="icon.jpg" />
   <style>
@@ -660,29 +660,13 @@
         class="city-input"
         type="text"
         list="cityDatalist"
-        placeholder="请输入国内外城市名称查询（如：上海、北京、东京、巴黎、伦敦、纽约、悉尼、雷克雅未克...）"
+        placeholder="请输入国内外城市名称查询"
         autocomplete="off"
       />
       <datalist id="cityDatalist"></datalist>
       <button type="button" class="btn btn-primary" id="searchBtn" onclick="handleCitySearch()">
         🔍 匹配城市并生成预报
       </button>
-    </div>
-
-    <!-- 国内外主要城市匹配列表（可按大洲筛选并点击直达） -->
-    <div class="city-directory">
-      <div class="dir-header">
-        <span id="dirCountLabel">🌍 国内外主要城市匹配名录（点击城市直接生成预报）：</span>
-        <div class="region-tabs" id="regionTabs">
-          <button type="button" class="region-tab active" onclick="filterCityDirectory('all')">全部主要城市</button>
-          <button type="button" class="region-tab" onclick="filterCityDirectory('中国')">中国主要城市</button>
-          <button type="button" class="region-tab" onclick="filterCityDirectory('亚洲')">亚洲/中东</button>
-          <button type="button" class="region-tab" onclick="filterCityDirectory('欧洲')">欧洲</button>
-          <button type="button" class="region-tab" onclick="filterCityDirectory('美洲')">北美洲/南美洲</button>
-          <button type="button" class="region-tab" onclick="filterCityDirectory('大洋洲与非洲')">大洋洲/非洲</button>
-        </div>
-      </div>
-      <div class="city-tags-wrap" id="cityTagsContainer"></div>
     </div>
 
     <!-- 匹配成功后的城市地理坐标信息栏 -->
@@ -1337,8 +1321,6 @@ function renderCityDirectoryTags() {
     if (currentDirectoryRegion === "all") return true;
     return CITY_COORDS_DB[k].region === currentDirectoryRegion;
   });
-  document.getElementById("dirCountLabel").innerText =
-    `🌍 国内外主要城市匹配名录（当前分类共 ${keys.length} 座城市，点击直接查询）：`;
   wrap.innerHTML = keys.map(k => {
     const item = CITY_COORDS_DB[k];
     const label = item.region === "中国" ? k : `${k} (${item.en})`;
