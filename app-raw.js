@@ -479,7 +479,6 @@ async function handleCitySearch(ev) {
 
   btn.disabled = true;
   btn.innerText = "⏳ 正在匹配城市并拉取模型...";
-  showForecastSkeleton();
 
   const matched = await resolveCityCoordinates(query);
 
@@ -589,36 +588,12 @@ async function handleCitySearch(ev) {
   renderForecastDashboard();
 }
 
-/* ---------------- 骨架屏：城市匹配 / 数据拉取期间替代预报面板占位 ---------------- */
-let forecastSkeletonTimer = null;
-
-/** 稍作延迟再显示，避免本地即时匹配（没有真实网络等待）时骨架一闪而过 */
-function showForecastSkeleton(delay = 160) {
-  hideForecastSkeleton();
-  forecastSkeletonTimer = setTimeout(() => {
-    forecastSkeletonTimer = null;
-    document.getElementById("emptyOrErrorState").style.display = "none";
-    document.getElementById("matchedBanner").style.display = "none";
-    document.getElementById("forecastContainer").style.display = "none";
-    const skel = document.getElementById("forecastSkeleton");
-    if (skel) {
-      skel.style.display = "block";
-      skel.setAttribute("aria-busy", "true");
-    }
-  }, delay);
-}
-
-function hideForecastSkeleton() {
-  if (forecastSkeletonTimer) { clearTimeout(forecastSkeletonTimer); forecastSkeletonTimer = null; }
-  const skel = document.getElementById("forecastSkeleton");
-  if (skel) {
-    skel.style.display = "none";
-    skel.setAttribute("aria-busy", "false");
-  }
-}
+/* ---------------- 骨架屏：预报区骨架已移除，骨架仅代表页面资源加载 ----------------
+ * 旧逻辑曾在城市匹配 / 气象数据拉取期间显示预报区骨架，并在 renderForecastDashboard
+ * （气象 API 回调）中关闭 —— 现改为：骨架只在页面 DOM 加载完成后隐藏，
+ * 气象数据改为页面加载完成后再后台异步请求，不再用骨架占位等待接口。 */
 
 function showEmptyOrErrorState(icon, title, desc, isError) {
-  hideForecastSkeleton();
   document.getElementById("forecastContainer").style.display = "none";
   document.getElementById("matchedBanner").style.display = "none";
 
@@ -757,7 +732,6 @@ function evaluateGlowBalanced(p, slotType = "pm") {
 function renderForecastDashboard() {
   if (!currentCityData) return;
 
-  hideForecastSkeleton();
   document.getElementById("emptyOrErrorState").style.display = "none";
   document.getElementById("forecastContainer").style.display = "block";
 
@@ -772,6 +746,11 @@ function renderForecastDashboard() {
   renderForecastMatrix();
   updateActiveSlotView();
   renderHistoryTable();
+
+  // 前台渲染完成后，把最近一次达标朝霞/晚霞交给安卓原生层做定时提醒
+  if (typeof window.__pushRemindTasks === "function") {
+    try { window.__pushRemindTasks(); } catch (e) {}
+  }
 }
 
 function renderForecastMatrix() {
@@ -1519,3 +1498,262 @@ window.addEventListener("DOMContentLoaded", initStaticElements);
         try { init(); } catch (e) {}
       }
     })();
+
+// ==================== 7. 霞情通知（网页端 ⇄ 安卓 WebView 原生层） ====================
+/*
+ * 说明：
+ *  · 前台：页面每次渲染完三天预报后，把「未来达标的朝霞 / 晚霞时段」交给安卓原生层，
+ *    由原生层存 SQLite 并用 WorkManager / AlarmManager 定时，到点弹系统通知；
+ *    页面自身不使用任何 JS 定时器来推送。
+ *  · 后台：安卓 WorkManager 唤醒一个无界面 WebView 加载本页（?headless=1），
+ *    复用同一套定位 / 拉数 / 评分逻辑，算完通过 onHeadlessDone 回传原生层。
+ *  · 通知开关依赖「启动时自动获取位置加载预报」：未开启自动定位时不允许开启通知。
+ */
+(function () {
+  "use strict";
+
+  var NOTIFY_KEY      = "sunset-notify";       // 通知总开关："1" 开启 / "0" 关闭
+  var NOTIFY_MODE_KEY = "sunset-notify-mode";  // 通知模式："mid"（≥中烧）| "all"（全部时段）
+  var AUTO_KEY        = "sunset-auto-locate";  // 与定位模块共用同一开关键
+  var MID_MIN         = 58;                    // GRADES 中「中烧」的分数下限
+  var GEO_TIMEOUT     = 10000;
+
+  /* ---------- 原生桥 / 本地存储 ---------- */
+  function bridge() {
+    try {
+      if (typeof AndroidInterface !== "undefined" && AndroidInterface) return AndroidInterface;
+    } catch (e) {}
+    return null;
+  }
+  function readStr(k, dft) {
+    try { var v = localStorage.getItem(k); return v === null ? dft : v; } catch (e) { return dft; }
+  }
+  function writeStr(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+  function notifyOn()  { return readStr(NOTIFY_KEY, "0") === "1"; }
+  function allMode()   { return readStr(NOTIFY_MODE_KEY, "mid") === "all"; }
+  function autoOn()    { return readStr(AUTO_KEY, "0") === "1"; }
+
+  /* ---------- 时段 → 本地时间戳（今天 / 明天 / 后天的朝霞或晚霞时刻） ---------- */
+  function slotWhen(meta, city) {
+    try {
+      var seg = String(meta.dateStr).split("-");
+      var mm = parseInt(seg[0], 10), dd = parseInt(seg[1], 10);
+      if (!mm || !dd || !city) return 0;
+      var hm = String(estimateSunTime(city.lon, meta.type, city.tz)).split(":");
+      var y = new Date().getFullYear();
+      var t = new Date(y, mm - 1, dd, parseInt(hm[0], 10), parseInt(hm[1], 10), 0, 0).getTime();
+      // 12 月末的「明天/后天」会跨到下一年，此时月份小于当前月，补正年份
+      if (mm < new Date().getMonth() + 1) {
+        t = new Date(y + 1, mm - 1, dd, parseInt(hm[0], 10), parseInt(hm[1], 10), 0, 0).getTime();
+      }
+      return t;
+    } catch (e) { return 0; }
+  }
+
+  function gradeOf(score) {
+    var g = GRADES[0];
+    for (var i = 0; i < GRADES.length; i++) { if (score >= GRADES[i].min) g = GRADES[i]; }
+    return g;
+  }
+
+  /* ---------- 按当前城市数据 + 通知模式，生成未来提醒任务清单 ---------- */
+  function buildTasks() {
+    if (!currentCityData || !currentCityData.slots) return [];
+    var floor = Date.now() + 60 * 1000;   // 至少留 1 分钟，避免刚过点就推送
+    var all   = allMode();
+    var list  = [];
+
+    for (var i = 0; i < SLOT_METAS.length; i++) {
+      var m = SLOT_METAS[i];
+      var p = currentCityData.slots[m.key];
+      if (!p) continue;
+
+      var res  = evaluateGlowBalanced(p, m.type);
+      var when = slotWhen(m, currentCityData);
+      if (!when || when <= floor) continue;
+      if (!all && res.score < MID_MIN) continue;   // 「≥中烧」模式过滤
+
+      var g = gradeOf(res.score);
+      list.push({
+        key:     m.key,
+        time:    when,
+        score:   Math.round(res.score * 10) / 10,
+        grade:   g.name,
+        city:    currentCityData.name,
+        slot:    m.dayLabel + "·" + m.typeName,
+        title:   "🔥 " + currentCityData.name + " " + m.dayLabel + m.typeName + " " + g.name,
+        content: "预计" + g.name + "，" + Math.round(res.score) + " 分，最佳观赏时间约 "
+               + estimateSunTime(currentCityData.lon, m.type, currentCityData.tz) + "。"
+      });
+    }
+
+    list.sort(function (a, b) { return a.time - b.time; });
+    return list;
+  }
+
+  /* ---------- 把任务清单交给原生层（关闭或未定位时传空数组，用于清空待办） ---------- */
+  function syncTasks() {
+    var br = bridge();
+    if (!br || typeof br.addRemindTask !== "function") return -1;
+    var tasks = (notifyOn() && autoOn()) ? buildTasks() : [];
+    try { br.addRemindTask(JSON.stringify(tasks)); } catch (e) { return -1; }
+    return tasks.length;
+  }
+
+  /* 由 renderForecastDashboard 在每次渲染完成后调用 */
+  window.__pushRemindTasks = function () {
+    try { return syncTasks(); } catch (e) { return -1; }
+  };
+
+  /* ---------- 设置面板：通知开关 + 模式选择（依赖自动定位） ---------- */
+  function refreshPanel() {
+    var chk  = document.getElementById("notifyCheck");
+    var box  = document.getElementById("notifyModes");
+    var hint = document.getElementById("notifyHint");
+    var auto = autoOn();
+    var on   = notifyOn();
+
+    if (chk) {
+      chk.checked  = on && auto;
+      chk.disabled = !auto;                 // 未开启自动定位时不允许开启通知
+    }
+    if (box) { box.className = "notify-modes" + ((on && auto) ? " open" : ""); }
+    if (hint) {
+      hint.innerText = !auto
+        ? "需先开启「启动时自动获取位置加载预报」"
+        : (on ? "已开启，将在达标时段推送提醒" : "关闭后不再推送任何提醒");
+    }
+
+    var opts = document.querySelectorAll("#notifyModes [data-mode]");
+    for (var i = 0; i < opts.length; i++) {
+      var active = (opts[i].getAttribute("data-mode") === (allMode() ? "all" : "mid"));
+      opts[i].className = "theme-option" + (active ? " active" : "");
+      opts[i].setAttribute("aria-pressed", active ? "true" : "false");
+    }
+  }
+
+  function bindPanel() {
+    var chk = document.getElementById("notifyCheck");
+    if (chk) {
+      chk.addEventListener("change", function () {
+        var want = !!chk.checked;
+        if (want && !autoOn()) {            // 通知必须建立在自动定位已开启的基础上
+          chk.checked = false;
+          writeStr(NOTIFY_KEY, "0");
+          refreshPanel();
+          return;
+        }
+        writeStr(NOTIFY_KEY, want ? "1" : "0");
+        refreshPanel();
+        var n = syncTasks();
+        var br = bridge();
+        if (want && br && typeof br.showLocalNotification === "function") {
+          try {
+            br.showLocalNotification("霞情提醒已开启",
+              n > 0 ? ("已安排 " + n + " 条提醒，到点将推送系统通知。") : "三天内暂无可推送的达标时段。");
+          } catch (e) {}
+        }
+      });
+    }
+
+    var opts = document.querySelectorAll("#notifyModes [data-mode]");
+    for (var i = 0; i < opts.length; i++) {
+      opts[i].addEventListener("click", function () {
+        writeStr(NOTIFY_MODE_KEY, this.getAttribute("data-mode") === "all" ? "all" : "mid");
+        refreshPanel();
+        syncTasks();
+      });
+    }
+
+    // 自动定位开关变化时，通知可用状态随之联动（定位关闭 → 通知自动关闭）
+    var autoChk = document.getElementById("autoLocateCheck");
+    if (autoChk) {
+      autoChk.addEventListener("change", function () {
+        if (!autoChk.checked && notifyOn()) { writeStr(NOTIFY_KEY, "0"); syncTasks(); }
+        refreshPanel();
+      });
+    }
+
+    refreshPanel();
+  }
+
+  /* ---------- 后台无界面模式：复用同一定位 / 拉数 / 评分链路 ---------- */
+  function headlessReport(payload) {
+    var br = bridge();
+    try {
+      if (br && typeof br.onHeadlessDone === "function") br.onHeadlessDone(JSON.stringify(payload));
+    } catch (e) {}
+  }
+
+  function headlessPosition() {
+    return new Promise(function (resolve, reject) {
+      try {
+        if (!navigator || !navigator.geolocation) { reject({ code: "unsupported" }); return; }
+        navigator.geolocation.getCurrentPosition(
+          function (pos) { resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }); },
+          function (err) { reject(err || { code: "unknown" }); },
+          { enableHighAccuracy: false, timeout: GEO_TIMEOUT, maximumAge: 300000 }
+        );
+      } catch (e) { reject({ code: "unknown" }); }
+    });
+  }
+
+  function headlessCityName(lat, lon) {
+    var primary = "https://api.bigdatacloud.net/data/reverse-geocode-client"
+      + "?latitude=" + encodeURIComponent(lat) + "&longitude=" + encodeURIComponent(lon)
+      + "&localityLanguage=zh";
+    return fetchJsonWithTimeout(primary, 5000).then(function (d) {
+      var name = d && (d.city || d.locality || d.principalSubdivision || d.countryName);
+      if (!name || !String(name).trim()) throw new Error("empty primary");
+      return String(name).trim();
+    }).catch(function () {
+      var back = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&accept-language=zh-CN"
+        + "&lat=" + encodeURIComponent(lat) + "&lon=" + encodeURIComponent(lon);
+      return fetchJsonWithTimeout(back, 5000).then(function (d) {
+        var a = (d && d.address) || {};
+        var name = a.city || a.town || a.village || a.county || a.state || (d && d.name);
+        if (!name || !String(name).trim()) throw new Error("empty fallback");
+        return String(name).trim();
+      });
+    });
+  }
+
+  // 安卓 WorkManager 在无界面 WebView 中按名调用（属性名不会被混淆）
+  window.__startHeadless = function () {
+    if (!notifyOn() || !autoOn()) { headlessReport({ ok: false, reason: "disabled" }); return; }
+
+    var input = document.getElementById("cityInput");
+    if (!input || typeof handleCitySearch !== "function") {
+      headlessReport({ ok: false, reason: "no-pipeline" });
+      return;
+    }
+
+    headlessPosition().then(function (pt) {
+      return headlessCityName(pt.lat, pt.lon).then(
+        function (city) { return city; },
+        function () { return ""; }
+      );
+    }).then(function (city) {
+      if (!city) throw { code: "reverse" };
+      input.value = city;
+      return handleCitySearch();
+    }).then(function () {
+      headlessReport({
+        ok:    true,
+        city:  currentCityData ? currentCityData.name : "",
+        mode:  allMode() ? "all" : "mid",
+        tasks: buildTasks()
+      });
+    }).catch(function (err) {
+      headlessReport({ ok: false, reason: String((err && err.code) || err || "error") });
+    });
+  };
+
+  /* ---------- 初始化 ---------- */
+  if (document.readyState === "loading") {
+    window.addEventListener("DOMContentLoaded", function () { try { bindPanel(); } catch (e) {} });
+  } else {
+    try { bindPanel(); } catch (e) {}
+  }
+})();
