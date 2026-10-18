@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:windowBackground">#f7f4ec</item>
+        <item name="android:colorBackground">#f7f4ec</item>
+        <!-- 状态栏：保持显示，配色与页面米白一致，浅底用深色图标 -->
+        <item name="android:statusBarColor">#f7f4ec</item>
+        <item name="android:navigationBarColor">#f7f4ec</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

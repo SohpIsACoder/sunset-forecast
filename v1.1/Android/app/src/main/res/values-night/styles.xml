@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      系统处于深色模式时启用：启动窗口底色与状态栏直接取页面墨色底，
+      避免用户选择深色主题时出现启动闪白。页面内主题仍由网页的
+      主题控制器（浅色 / 深色 / 跟随系统）决定。
+    -->
+    <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">#14120f</item>
+        <item name="android:colorBackground">#14120f</item>
+        <item name="android:statusBarColor">#14120f</item>
+        <item name="android:navigationBarColor">#14120f</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

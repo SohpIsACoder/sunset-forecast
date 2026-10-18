@@ -1,0 +1,4 @@
+// 顶层构建脚本（供 Android Studio 使用；命令行构建请直接运行 build_apk.ps1）
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+}

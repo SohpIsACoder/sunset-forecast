@@ -1,0 +1,59 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.sunset.forecast'
+    compileSdk 34
+    buildToolsVersion "34.0.0"
+
+    defaultConfig {
+        applicationId "com.sunset.forecast"
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    // 发布签名：使用工程内自签名密钥，保证每次重建签名一致（便于覆盖安装）
+    signingConfigs {
+        release {
+            storeFile file("../keystore/sunset-release.keystore")
+            storePassword "Sunset#2026"
+            keyAlias "sunsetkey"
+            keyPassword "Sunset#2026"
+        }
+    }
+
+    buildTypes {
+        release {
+            // 开启 R8 压缩 + 混淆 + 资源裁剪
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    packaging {
+        resources {
+            excludes += ['META-INF/**', '**/*.kotlin_module']
+        }
+    }
+
+    // 加密资源不再二次压缩，加快解析
+    androidResources {
+        noCompress 'dat'
+    }
+}
+
+dependencies {
+}
