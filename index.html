@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>网页端火烧云预报系统 - 黄金平衡校准版</title>
+  <title>网页端火烧云预报系统</title>
+  <link rel="icon" type="image/jpeg" href="icon.jpg" />
+  <link rel="apple-touch-icon" href="icon.jpg" />
   <style>
     :root {
       --bg-page: #f7f4ec;
@@ -645,15 +647,8 @@
   <header class="header">
     <div>
       <div class="title-wrap">
-        <span class="status-dot"></span>
-        <h1 class="title-grad">网页端火烧云预报系统</h1>
-        <span class="badge-balance">⚖️ 黄金平衡校准版 (S型缓降 + 短板协同合成)</span>
-        <span class="badge-lock">🔒 后端参数固定</span>
-        <span class="badge-cron" id="cronTimer">整点自动调度: 59:45</span>
+        <h1 class="title-grad">Sohp的火烧云预报系统</h1>
       </div>
-      <p class="subtitle">
-        数据源：NOAA GFS (0.4) + ECMWF IFS (0.6) + CAMS 气溶胶 (AOD) · 100/250/400km 光路低云追踪（已剔除远端高云误伤）
-      </p>
     </div>
   </header>
 
@@ -802,7 +797,6 @@
     <div class="card">
       <div class="card-title">
         <span>📊 原始气象与气溶胶模型参数 (后端固定拉取 · 只读不可修改)</span>
-        <span style="font-size:12px; color:#2f5e41;" id="dataSourceTag">🔒 参数已锁定</span>
       </div>
 
       <div class="models-grid">
@@ -904,6 +898,8 @@
       </div>
     </div>
   </div>
+
+  <footer style="margin-top:26px; text-align:center; font-size:12px; color:#9a9280; letter-spacing:0.02em;">© 2026 Sohp All Rights Reserved. · v1.0</footer>
 </div>
 
 <script>
@@ -1306,7 +1302,7 @@ function buildDeterministicCitySlots(lat, lon) {
     slots[m.key] = {
       gfs_h, gfs_m, gfs_l, ec_h, ec_m, ec_l,
       rem_100, rem_250, rem_400, aod, rh,
-      updatedAt: new Date().toLocaleTimeString() + " 模型锁定批次"
+      updatedAt: new Date().toLocaleTimeString()
     };
   });
   return slots;
@@ -1441,12 +1437,12 @@ async function handleCitySearch(ev) {
         rem_100: r100, rem_250: r250, rem_400: r400,
         aod:   Number((aodH.aerosol_optical_depth?.[hrIdx] ?? 0.26).toFixed(2)),
         rh:    Math.round(gfsH.relative_humidity_2m?.[hrIdx] ?? 64),
-        updatedAt: new Date().toLocaleTimeString() + " API实况锁定"
+        updatedAt: new Date().toLocaleTimeString()
       };
     });
   } catch (e) {
     slots = buildDeterministicCitySlots(matched.lat, matched.lon);
-    sourceLabel = "GFS + ECMWF + CAMS 网格基准数据 (已锁定)";
+    sourceLabel = "GFS + ECMWF + CAMS 网格基准数据";
   }
 
   currentCityData = {
@@ -1669,7 +1665,6 @@ function renderForecastMatrix() {
       <div class="day-col">
         <div class="day-header">
           <span>${headMeta.dayLabel} (${headMeta.dateStr})</span>
-          <span style="font-size:11.5px; color:var(--text-muted);">黄金平衡模型</span>
         </div>
         <div class="day-slots ${singleCls}">${slotsHtml}</div>
       </div>
@@ -2061,17 +2056,6 @@ function initStaticElements() {
     }
   });
 }
-
-let remainSec = 3585;
-setInterval(() => {
-  remainSec = remainSec > 0 ? remainSec - 1 : 3600;
-  const m = String(Math.floor(remainSec / 60)).padStart(2, "0");
-  const s = String(remainSec % 60).padStart(2, "0");
-  document.getElementById("cronTimer").innerText = `整点自动调度: ${m}:${s}`;
-  if (remainSec === 0 && currentCityData) {
-    handleCitySearch();
-  }
-}, 1000);
 
 window.addEventListener("DOMContentLoaded", initStaticElements);
 </script>
