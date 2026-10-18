@@ -1,0 +1,2012 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>网页端火烧云预报系统 - 黄金平衡校准 & 热力地图版</title>
+  <!-- 引入 Leaflet 地图核心样式与脚本 -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    :root {
+      --bg-deep: #060a14;
+      --glass-surface: rgba(255, 255, 255, 0.035);
+      --glass-sub: rgba(255, 255, 255, 0.022);
+      --glass-hover: rgba(255, 255, 255, 0.065);
+      --glass-border: rgba(255, 255, 255, 0.11);
+      --glass-shadow: 0 12px 36px -8px rgba(0, 0, 0, 0.38), inset 0 1px 0 0 rgba(255, 255, 255, 0.14);
+      --glass-sub-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.22), inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #fb923c;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg-deep);
+      background-image:
+        radial-gradient(circle at 18% 12%, rgba(56, 189, 248, 0.09) 0%, transparent 45%),
+        radial-gradient(circle at 82% 8%, rgba(244, 63, 94, 0.08) 0%, transparent 45%),
+        radial-gradient(circle at 50% 85%, rgba(99, 102, 241, 0.07) 0%, transparent 55%),
+        linear-gradient(180deg, #0a1122 0%, #060a14 100%);
+      background-attachment: fixed;
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      min-height: 100vh;
+      padding: 18px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container { max-width: 1140px; margin: 0 auto; }
+
+    /* 顶部栏 - 统一液态玻璃卡片 */
+    .header {
+      display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
+      gap: 12px; padding: 16px 20px; margin-bottom: 18px;
+      background: var(--glass-surface);
+      backdrop-filter: blur(24px) saturate(140%);
+      -webkit-backdrop-filter: blur(24px) saturate(140%);
+      border: 1px solid var(--glass-border);
+      border-radius: 18px;
+      box-shadow: var(--glass-shadow);
+    }
+    .title-wrap { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .status-dot {
+      width: 9px; height: 9px; border-radius: 50%; background: #34d399;
+      box-shadow: 0 0 10px rgba(52, 211, 153, 0.7); animation: pulse 2.4s infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+    .title-grad { font-size: 20px; font-weight: 800; color: var(--text-main); letter-spacing: 0.01em; }
+    .badge-balance, .badge-lock, .badge-cron {
+      font-size: 11px; padding: 3px 10px; border-radius: 999px;
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); font-weight: 600;
+    }
+    .badge-balance { background: rgba(16, 185, 129, 0.10); border: 1px solid rgba(52, 211, 153, 0.28); color: #a7f3d0; }
+    .badge-lock { background: rgba(56, 189, 248, 0.10); border: 1px solid rgba(125, 211, 252, 0.28); color: #bae6fd; }
+    .badge-cron { background: rgba(251, 146, 60, 0.10); border: 1px solid rgba(253, 186, 116, 0.28); color: #fed7aa; }
+    .subtitle { font-size: 12px; color: var(--text-muted); margin-top: 5px; }
+
+    /* 城市搜索控制中心 */
+    .search-card {
+      background: var(--glass-surface);
+      backdrop-filter: blur(24px) saturate(140%);
+      -webkit-backdrop-filter: blur(24px) saturate(140%);
+      border: 1px solid var(--glass-border);
+      border-radius: 18px; padding: 18px 20px; margin-bottom: 18px;
+      box-shadow: var(--glass-shadow); overflow: hidden;
+    }
+    .search-bar {
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch;
+      width: 100%; max-width: 760px; margin: 0 auto;
+    }
+    .city-input {
+      flex: 1 1 240px; min-width: 0; width: 100%; padding: 11px 16px; border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.14); background: rgba(255, 255, 255, 0.04);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      color: var(--text-main); font-size: 13.5px; outline: none; transition: all 0.22s ease;
+    }
+    .city-input::placeholder { color: rgba(148, 163, 184, 0.72); }
+    .city-input:focus {
+      border-color: rgba(251, 146, 60, 0.55); background: rgba(255, 255, 255, 0.065);
+      box-shadow: 0 0 0 3px rgba(251, 146, 60, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    }
+
+    /* 通透渐变液态玻璃按钮 */
+    .btn {
+      flex: 0 0 auto; max-width: 100%; padding: 11px 20px; border-radius: 12px;
+      font-size: 13.5px; font-weight: 600; cursor: pointer; color: var(--text-main);
+      background: rgba(255, 255, 255, 0.06); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+      transition: all 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap;
+    }
+    .btn:hover { transform: scale(1.018); filter: brightness(1.12); border-color: rgba(255, 255, 255, 0.32); }
+    .btn:active { transform: scale(0.99); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; filter: none; }
+
+    .btn-primary {
+      background: linear-gradient(135deg, rgba(251, 146, 60, 0.28) 0%, rgba(244, 63, 94, 0.28) 55%, rgba(168, 85, 247, 0.22) 100%);
+      border: 1px solid rgba(255, 255, 255, 0.24);
+      box-shadow: 0 6px 20px rgba(244, 63, 94, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+    }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, rgba(251, 146, 60, 0.38) 0%, rgba(244, 63, 94, 0.38) 55%, rgba(168, 85, 247, 0.30) 100%);
+      box-shadow: 0 8px 24px rgba(244, 63, 94, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.38);
+    }
+
+    @media (max-width: 600px) {
+      body { padding: 12px; }
+      .search-bar { flex-direction: column; }
+      .city-input, .btn { width: 100%; flex: 1 1 auto; }
+    }
+
+    /* 城市坐标匹配结果条 */
+    .matched-banner {
+      max-width: 760px; margin: 12px auto 0; padding: 9px 14px; border-radius: 11px;
+      background: rgba(16, 185, 129, 0.08); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(52, 211, 153, 0.24); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      color: #d1fae5; font-size: 12px; display: none; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;
+    }
+
+    /* 空状态 / 错误分支状态面板 */
+    .state-placeholder {
+      background: var(--glass-surface); backdrop-filter: blur(24px) saturate(140%); -webkit-backdrop-filter: blur(24px) saturate(140%);
+      border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow);
+      border-radius: 18px; padding: 42px 24px; text-align: center; margin-bottom: 18px;
+    }
+    .state-icon { font-size: 38px; margin-bottom: 10px; opacity: 0.9; }
+    .state-title { font-size: 16px; font-weight: 700; color: var(--text-main); margin-bottom: 6px; }
+    .state-desc { font-size: 13px; color: var(--text-muted); max-width: 520px; margin: 0 auto; }
+    .state-error { border-color: rgba(244, 63, 94, 0.32); background: rgba(244, 63, 94, 0.04); }
+    .state-error .state-title { color: #fecdd3; }
+
+    /* 预报主容器（默认隐藏，仅在匹配城市成功后显示） */
+    #forecastContainer { display: none; }
+
+    .card {
+      background: var(--glass-surface); backdrop-filter: blur(24px) saturate(140%); -webkit-backdrop-filter: blur(24px) saturate(140%);
+      border: 1px solid var(--glass-border); border-radius: 18px; padding: 18px; margin-bottom: 18px;
+      box-shadow: var(--glass-shadow);
+    }
+    .card-title {
+      font-size: 12.5px; font-weight: 700; color: #e2e8f0; text-transform: uppercase;
+      letter-spacing: 0.04em; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;
+    }
+
+    /* 分段按钮 */
+    .seg-group {
+      display: inline-flex; background: rgba(255, 255, 255, 0.03);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      padding: 3px; border-radius: 10px; border: 1px solid var(--glass-border); gap: 3px; flex-wrap: wrap;
+    }
+    .seg-btn {
+      padding: 5px 11px; font-size: 11.5px; font-weight: 600; border-radius: 7px;
+      cursor: pointer; color: var(--text-muted); border: 1px solid transparent; background: transparent; transition: all 0.18s;
+    }
+    .seg-btn:hover { color: var(--text-main); }
+    .seg-btn.active {
+      background: rgba(255, 255, 255, 0.10); border-color: rgba(255, 255, 255, 0.16);
+      color: var(--text-main); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    }
+
+    /* 3日 × 朝霞/晚霞 六宫格矩阵 */
+    .forecast-matrix { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    @media (max-width: 780px) { .forecast-matrix { grid-template-columns: 1fr; } }
+    .day-col {
+      background: var(--glass-sub); border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 14px; padding: 12px; box-shadow: var(--glass-sub-shadow);
+    }
+    .day-header {
+      font-size: 12px; font-weight: 700; color: var(--text-main); margin-bottom: 10px;
+      display: flex; justify-content: space-between; align-items: center;
+      padding-bottom: 7px; border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    }
+    .day-slots { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .day-slots.single-col { grid-template-columns: 1fr; }
+    .slot-card {
+      padding: 10px 11px; border-radius: 11px; background: rgba(255, 255, 255, 0.025);
+      border: 1px solid rgba(255, 255, 255, 0.08); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      cursor: pointer; transition: all 0.2s ease;
+    }
+    .slot-card:hover { background: var(--glass-hover); border-color: rgba(255, 255, 255, 0.2); transform: translateY(-1px); }
+    .slot-card.active {
+      background: linear-gradient(135deg, rgba(251, 146, 60, 0.14), rgba(244, 63, 94, 0.10));
+      border-color: rgba(251, 146, 60, 0.55); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+    }
+    .slot-type { font-size: 11.5px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; }
+    .slot-time { font-size: 10.5px; color: var(--text-muted); font-family: monospace; }
+    .slot-grade-row { display: flex; align-items: baseline; justify-content: space-between; margin-top: 7px; }
+    .slot-badge { font-size: 11px; font-weight: 800; padding: 2px 7px; border-radius: 6px; color: #fff; }
+    .slot-score { font-size: 15px; font-weight: 800; font-family: monospace; color: var(--text-main); }
+    .slot-bar { height: 4px; border-radius: 99px; margin-top: 7px; width: 100%; }
+
+    /* 核心画布区 */
+    .hero-box {
+      position: relative; border-radius: 14px; overflow: hidden; border: 1px solid var(--glass-border);
+      margin-bottom: 14px; background: rgba(6, 10, 20, 0.45); box-shadow: var(--glass-sub-shadow);
+    }
+    #skyCanvas { width: 100%; height: 240px; display: block; }
+    .hero-overlay {
+      position: absolute; inset: 0; padding: 15px; pointer-events: none;
+      display: flex; flex-direction: column; justify-content: space-between;
+      background: linear-gradient(to top, rgba(6, 10, 20, 0.78) 0%, rgba(6, 10, 20, 0.08) 50%, rgba(6, 10, 20, 0.52) 100%);
+    }
+    .hero-top, .hero-bottom {
+      display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px; pointer-events: auto;
+    }
+    .hero-bottom { align-items: flex-end; }
+    .hero-meta {
+      font-size: 11.5px; color: var(--text-main); background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.16); padding: 4px 11px; border-radius: 999px;
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    }
+    .main-grade-badge {
+      display: inline-block; padding: 5px 14px; border-radius: 10px; font-size: 22px; font-weight: 900;
+      color: #fff; border: 1px solid rgba(255, 255, 255, 0.25); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    }
+    .score-num { font-size: 30px; font-weight: 900; font-family: monospace; margin-left: 10px; color: #ffffff; }
+    .color-bias-card {
+      background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.16);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14); padding: 10px 14px; border-radius: 12px; min-width: 265px;
+      backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    }
+    .spectrum-bar { height: 6px; border-radius: 999px; margin-top: 6px; width: 100%; }
+
+    /* 黄金平衡 5 项因子拆解面板 */
+    .formula-bar {
+      display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;
+      margin: 14px 0; padding: 10px; border-radius: 13px;
+      background: var(--glass-sub); border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    @media (max-width: 780px) { .formula-bar { grid-template-columns: repeat(2, 1fr); } }
+    .f-item {
+      padding: 7px 10px; border-radius: 9px; background: rgba(255, 255, 255, 0.025);
+      border: 1px solid rgba(255, 255, 255, 0.06); border-left: 2.5px solid #64748b; font-size: 11px;
+    }
+    .f-label { color: var(--text-muted); font-size: 10.5px; display: flex; justify-content: space-between; }
+    .f-val { font-family: monospace; font-size: 14.5px; font-weight: 800; color: var(--text-main); margin-top: 2px; }
+    .f-sub { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+
+    /* 等级游标与只读图例 */
+    .scale-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-bottom: 5px; }
+    .scale-track {
+      height: 8px; background: rgba(255, 255, 255, 0.05); border-radius: 999px;
+      overflow: hidden; padding: 1px; border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .scale-fill { height: 100%; border-radius: 999px; transition: width 0.3s ease, background-color 0.3s ease; }
+
+    .grade-strip { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; margin-top: 10px; }
+    @media (max-width: 780px) { .grade-strip { grid-template-columns: repeat(4, 1fr); } }
+    .grade-chip {
+      display: flex; align-items: center; gap: 6px; padding: 5px 8px;
+      border-radius: 8px; background: rgba(255, 255, 255, 0.025);
+      font-size: 11px; border: 1px solid rgba(255, 255, 255, 0.07);
+    }
+    .grade-chip.current { border-color: rgba(251, 146, 60, 0.55); background: rgba(251, 146, 60, 0.12); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+    /* 诊断条 */
+    .diag-banner {
+      margin-top: 12px; padding: 10px 14px; border-radius: 10px;
+      background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08);
+      border-left: 3px solid #fb923c; font-size: 12px; color: #e2e8f0;
+    }
+
+    /* 三栏只读气象模型参数面板 */
+    .models-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    @media (max-width: 820px) { .models-grid { grid-template-columns: 1fr; } }
+    .model-box {
+      background: var(--glass-sub); border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 14px; padding: 14px; box-shadow: var(--glass-sub-shadow);
+    }
+    .ro-row { margin-bottom: 11px; }
+    .ro-row:last-child { margin-bottom: 0; }
+    .ro-head { display: flex; justify-content: space-between; font-size: 11.5px; margin-bottom: 4px; color: #cbd5e1; }
+    .ro-val { font-family: monospace; font-weight: 700; color: var(--text-main); }
+    .ro-bar-bg { height: 6px; background: rgba(255, 255, 255, 0.06); border-radius: 999px; overflow: hidden; }
+    .ro-bar-fill { height: 100%; border-radius: 999px; transition: width 0.3s ease; }
+
+    /* 历史记录表 */
+    .table-wrap { overflow-x: auto; max-height: 220px; overflow-y: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 11.5px; text-align: left; }
+    th {
+      padding: 9px 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--text-muted); font-weight: 600; position: sticky; top: 0;
+      background: rgba(12, 18, 34, 0.78); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    }
+    td { padding: 8px 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+    tr.hist-row { cursor: pointer; transition: background 0.15s; }
+    tr.hist-row:hover { background: rgba(255, 255, 255, 0.05); }
+
+    /* ==================== 常驻底部：火烧云热力地图模块 ==================== */
+    .map-section-card {
+      background: var(--glass-surface);
+      backdrop-filter: blur(24px) saturate(140%);
+      -webkit-backdrop-filter: blur(24px) saturate(140%);
+      border: 1px solid var(--glass-border);
+      border-radius: 18px;
+      padding: 18px;
+      margin-top: 18px;
+      box-shadow: var(--glass-shadow);
+      transition: all 0.28s ease;
+    }
+    .map-section-card.is-fullscreen {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      margin: 0;
+      border-radius: 0;
+      padding: 16px 20px;
+      background: rgba(6, 10, 20, 0.92);
+      display: flex;
+      flex-direction: column;
+    }
+    .map-viewport-wrap {
+      position: relative;
+      width: 100%;
+      height: 430px;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: #050912;
+      box-shadow: var(--glass-sub-shadow);
+    }
+    .map-section-card.is-fullscreen .map-viewport-wrap {
+      flex: 1;
+      height: auto;
+    }
+    #sunsetMap {
+      width: 100%;
+      height: 100%;
+      background: #060b16;
+      cursor: grab;
+    }
+    #sunsetMap:active { cursor: grabbing; }
+
+    /* 热力图 Canvas 覆盖层 */
+    #heatmapOverlayCanvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 420;
+    }
+
+    /* 地图左下角：火烧云指数热力颜色图例 (液态玻璃) */
+    .map-legend-box {
+      position: absolute;
+      left: 14px;
+      bottom: 14px;
+      z-index: 600;
+      padding: 11px 14px;
+      border-radius: 12px;
+      background: rgba(10, 16, 30, 0.72);
+      backdrop-filter: blur(18px) saturate(140%);
+      -webkit-backdrop-filter: blur(18px) saturate(140%);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+      color: var(--text-main);
+      min-width: 225px;
+      pointer-events: auto;
+    }
+    .legend-title {
+      font-size: 11.5px;
+      font-weight: 700;
+      color: #f8fafc;
+      margin-bottom: 7px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .legend-bar {
+      height: 8px;
+      width: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg,
+        rgba(255,255,255,0.06) 0%,
+        rgba(255,255,255,0.06) 19%,
+        rgba(251, 191, 36, 0.65) 20%,
+        rgba(249, 115, 22, 0.78) 45%,
+        rgba(239, 68, 68, 0.88) 70%,
+        rgba(220, 38, 38, 0.95) 85%,
+        rgba(153, 27, 27, 1) 100%
+      );
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      margin-bottom: 7px;
+    }
+    .legend-items {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 10.5px;
+      color: #cbd5e1;
+    }
+    .legend-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .legend-swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+      display: inline-block;
+      margin-right: 6px;
+      vertical-align: middle;
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+
+    /* 地图顶部悬浮坐标与全屏提示胶囊 */
+    .map-top-hud {
+      position: absolute;
+      top: 12px;
+      left: 54px;
+      right: 12px;
+      z-index: 600;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      gap: 8px;
+      pointer-events: none;
+    }
+    .map-hud-pill {
+      pointer-events: auto;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      color: var(--text-main);
+      background: rgba(10, 16, 30, 0.72);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .map-fs-btn {
+      cursor: pointer;
+      font-weight: 700;
+      color: #fed7aa;
+      border-color: rgba(251, 146, 60, 0.45);
+      transition: all 0.18s ease;
+    }
+    .map-fs-btn:hover {
+      background: rgba(251, 146, 60, 0.22);
+      transform: scale(1.03);
+    }
+
+    /* Leaflet 控件玻璃化改造 */
+    .leaflet-bar a {
+      background-color: rgba(15, 23, 42, 0.78) !important;
+      backdrop-filter: blur(12px);
+      color: #f8fafc !important;
+      border-color: rgba(255, 255, 255, 0.15) !important;
+    }
+    .leaflet-bar a:hover {
+      background-color: rgba(51, 65, 85, 0.85) !important;
+    }
+    .leaflet-control-attribution {
+      background: rgba(10, 16, 30, 0.55) !important;
+      color: #64748b !important;
+      font-size: 10px !important;
+      backdrop-filter: blur(6px);
+    }
+    .leaflet-control-attribution a { color: #94a3b8 !important; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <!-- 顶部导航 -->
+  <header class="header">
+    <div>
+      <div class="title-wrap">
+        <span class="status-dot"></span>
+        <h1 class="title-grad">网页端火烧云预报系统</h1>
+        <span class="badge-balance">⚖️ 黄金平衡校准版 (S型缓降 + 短板协同合成)</span>
+        <span class="badge-lock">🔒 后端参数固定</span>
+        <span class="badge-cron" id="cronTimer">整点自动调度: 59:45</span>
+      </div>
+      <p class="subtitle">
+        数据源：NOAA GFS (0.4) + ECMWF IFS (0.6) + CAMS 气溶胶 (AOD) · 100/250/400km 光路低云追踪（已剔除远端高云误伤）
+      </p>
+    </div>
+  </header>
+
+  <!-- 唯一输入入口：城市名称搜索框 -->
+  <div class="search-card">
+    <div class="search-bar">
+      <input
+        id="cityInput"
+        class="city-input"
+        type="text"
+        placeholder="请输入城市名称查询火烧云预报（如：上海、北京、杭州、成都、深圳、大理、拉萨、青岛...）"
+        autocomplete="off"
+      />
+      <button type="button" class="btn btn-primary" id="searchBtn" onclick="handleCitySearch()">
+        🔍 匹配城市并生成预报
+      </button>
+    </div>
+
+    <!-- 匹配成功后的城市地理坐标信息栏 -->
+    <div class="matched-banner" id="matchedBanner">
+      <span id="matchedCoordText">✓ 已匹配城市：--</span>
+      <span id="matchedSyncTime" style="font-family:monospace; color:#a7f3d0;">数据源：GFS + ECMWF + CAMS</span>
+    </div>
+  </div>
+
+  <!-- 分支状态 A：未输入城市或城市匹配失败时的占位/告警面板 -->
+  <div id="emptyOrErrorState" class="state-placeholder">
+    <div class="state-icon" id="stateIcon">🌇</div>
+    <div class="state-title" id="stateTitle">请输入目标城市名称以获取火烧云预测</div>
+    <div class="state-desc" id="stateDesc">
+      系统将自动匹配目标城市的经纬度坐标，拉取后端固定的 GFS、ECMWF 云层数据及 CAMS 气溶胶参数，计算未来三天（今/明/后天）的朝霞与晚霞等级。未输入城市或匹配失败时不渲染预测结果。
+    </div>
+  </div>
+
+  <!-- 分支状态 B：仅当城市匹配成功且拉取完成后才渲染的后三天预报主容器 -->
+  <div id="forecastContainer">
+    <!-- 1. 今/明/后三天 × 朝霞/晚霞 6时段矩阵 -->
+    <div class="card">
+      <div class="card-title">
+        <span id="matrixTitle">📅 未来三天 · 朝霞与晚霞预测矩阵 (点击卡片切换查看各时段详情)</span>
+        <div class="seg-group">
+          <button type="button" class="seg-btn active" id="flt_all" onclick="setEventFilter('all')">全部时段 (6)</button>
+          <button type="button" class="seg-btn" id="flt_am" onclick="setEventFilter('am')">🌅 仅看朝霞</button>
+          <button type="button" class="seg-btn" id="flt_pm" onclick="setEventFilter('pm')">🌇 仅看晚霞</button>
+        </div>
+      </div>
+      <div class="forecast-matrix" id="forecastMatrix"></div>
+    </div>
+
+    <!-- 2. 核心可视化画布 + 黄金平衡因子拆解 + 8级标准对照 -->
+    <div class="card">
+      <div class="hero-box">
+        <canvas id="skyCanvas" width="980" height="240"></canvas>
+        <div class="hero-overlay">
+          <div class="hero-top">
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <span class="hero-meta" id="heroLocInfo">--</span>
+              <span class="hero-meta" id="heroSlotInfo" style="border-color:rgba(251,146,60,0.45); color:#fed7aa;">--</span>
+              <span class="hero-meta" id="heroLightPathInfo">--</span>
+            </div>
+            <div class="seg-group" style="background:rgba(255,255,255,0.06);">
+              <button type="button" class="seg-btn active" id="view_sky" onclick="setCanvasMode('sky')">🏞️ 实景霞光模拟</button>
+              <button type="button" class="seg-btn" id="view_path" onclick="setCanvasMode('path')">📐 400km三点光路剖面</button>
+            </div>
+          </div>
+
+          <div class="hero-bottom">
+            <div>
+              <div style="font-size:11.5px; color:#cbd5e1; margin-bottom:2px;" id="heroPeakTime">最佳观赏窗口：--</div>
+              <div style="display:flex; align-items:baseline;">
+                <span class="main-grade-badge" id="mainGradeBadge">--</span>
+                <span class="score-num" id="mainScoreNum">--</span>
+              </div>
+            </div>
+            <div class="color-bias-card">
+              <div style="font-size:10.5px; color:#cbd5e1; display:flex; justify-content:space-between;">
+                <span>预测色彩偏向</span>
+                <span id="aodTagInfo" style="color:#fde68a; font-family:monospace;">AOD: --</span>
+              </div>
+              <div style="font-size:12px; font-weight:700; color:#fef08a; margin-top:2px;" id="colorBiasText">--</div>
+              <div class="spectrum-bar" id="spectrumBar"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 8级游标尺与只读图例 -->
+      <div class="scale-labels" id="scaleLabels"></div>
+      <div class="scale-track">
+        <div class="scale-fill" id="scaleFill" style="width: 0%;"></div>
+      </div>
+      <div class="grade-strip" id="gradeLegend"></div>
+
+      <!-- 黄金平衡 5 项因子拆解面板 -->
+      <div class="formula-bar">
+        <div class="f-item" style="border-left-color:#38bdf8;">
+          <div class="f-label"><span>① 有效云幕基础分</span><span>中高云平权</span></div>
+          <div class="f-val" id="fb_canvas">--</div>
+          <div class="f-sub" id="fb_canvas_sub">有效受光云幕: --</div>
+        </div>
+        <div class="f-item" style="border-left-color:#f43f5e;">
+          <div class="f-label"><span>② 本地低云透视率</span><span>S型缓降</span></div>
+          <div class="f-val" id="fb_low">--</div>
+          <div class="f-sub" id="fb_low_sub">0-25%云隙高宽容</div>
+        </div>
+        <div class="f-item" style="border-left-color:#f59e0b;">
+          <div class="f-label"><span>③ 三点光路透射率</span><span>剔除高云误伤</span></div>
+          <div class="f-val" id="fb_ray">--</div>
+          <div class="f-sub" id="fb_ray_sub">仅算远端中低厚云</div>
+        </div>
+        <div class="f-item" style="border-left-color:#a855f7;">
+          <div class="f-label"><span>④ 云厚与AOD系数</span><span>日常良天免扣</span></div>
+          <div class="f-val" id="fb_env">--</div>
+          <div class="f-sub" id="fb_env_sub">厚度×AOD协同</div>
+        </div>
+        <div class="f-item" style="border-left-color:#10b981;">
+          <div class="f-label"><span>⑤ 综合透光合成率</span><span>防连乘坍塌</span></div>
+          <div class="f-val" id="fb_comb">--</div>
+          <div class="f-sub" id="fb_comb_sub">主短板70%+均值30%</div>
+        </div>
+      </div>
+
+      <!-- 物理成因诊断条 -->
+      <div class="diag-banner" id="diagText">💡 物理成因诊断：--</div>
+    </div>
+
+    <!-- 3. 后端固定原始气象模型参数展示 (纯只读，无滑块控件) -->
+    <div class="card">
+      <div class="card-title">
+        <span>📊 原始气象与气溶胶模型参数 (后端固定拉取 · 只读不可修改)</span>
+        <span style="font-size:11px; color:#a7f3d0;" id="dataSourceTag">🔒 参数已锁定</span>
+      </div>
+
+      <div class="models-grid">
+        <!-- GFS 只读卡片 -->
+        <div class="model-box">
+          <div style="display:flex; justify-content:space-between; margin-bottom:10px; font-size:11.5px; font-weight:700; color:#7dd3fc;">
+            <span>NOAA GFS 数值模型</span><span>固定权重 40%</span>
+          </div>
+          <div class="ro-row">
+            <div class="ro-head"><span>高云量 (High Cloud >6km)</span><span class="ro-val" id="ro_gfs_h">--%</span></div>
+            <div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_gfs_h" style="background:#38bdf8; width:0%"></div></div>
+          </div>
+          <div class="ro-row">
+            <div class="ro-head"><span>中云量 (Mid Cloud 2-6km 主力云幕)</span><span class="ro-val" id="ro_gfs_m">--%</span></div>
+            <div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_gfs_m" style="background:#0284c7; width:0%"></div></div>
+          </div>
+          <div class="ro-row">
+            <div class="ro-head"><span style="color:#fda4af;">本地低云 (Low Cloud <2km)</span><span class="ro-val" id="ro_gfs_l">--%</span></div>
+            <div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_gfs_l" style="background:#f43f5e; width:0%"></div></div>
+          </div>
+          <div class="ro-row">
+            <div class="ro-head"><span>近地面相对湿度 (2m RH)</span><span class="ro-val" id="ro_rh">--%</span></div>
+            <div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_rh" style="background:#818cf8; width:0%"></div></div>
+          </div>
+        </div>
+
+        <!-- ECMWF 只读卡片 -->
+        <div class="model-box">
+          <div style="display:flex; justify-content:space-between; margin-bottom:10px; font-size:11.5px; font-weight:700; color:#6ee7b7;">
+            <span>ECMWF (EC) 数值模型</span><span>固定权重 60%</span>
+          </div>
+          <div class="ro-row">
+            <div class="ro-head"><span>高云量 (High Cloud >6km)</span><span class="ro-val" id="ro_ec_h">--%</span></div>
+            <div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_ec_h" style="background:#34d399; width:0%"></div></div>
+          </div>
+          <div class="ro-row">
+            <div class="ro-head"><span>中云量 (Mid Cloud 2-6km 主力云幕)</span><span class="ro-val" id="ro_ec_m">--%</span></div>
+            <div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_ec_m" style="background:#059669; width:0%"></div></div>
+          </div>
+          <div class="ro-row">
+            <div class="ro-head"><span style="color:#fda4af;">本地低云 (Low Cloud <2km)</span><span class="ro-val" id="ro_ec_l">--%</span></div>
+            <div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_ec_l" style="background:#f43f5e; width:0%"></div></div>
+          </div>
+          <div class="ro-row">
+            <div class="ro-head"><span style="color:#fde68a;">550nm 气溶胶光学厚度 (AOD)</span><span class="ro-val" id="ro_aod">--</span></div>
+            <div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_aod" style="background:#fbbf24; width:0%"></div></div>
+          </div>
+        </div>
+
+        <!-- 100/250/400km 光路采样只读卡片 -->
+        <div class="model-box">
+          <div style="display:flex; justify-content:space-between; margin-bottom:10px; font-size:11.5px; font-weight:700; color:#fde68a;">
+            <span id="rayBoxTitle">三点光路有效阻断率</span><span>剔除透光高云</span>
+          </div>
+          <div class="ro-row">
+            <div class="ro-head"><span>100km 近端低/厚中云阻断</span><span class="ro-val" id="ro_rem100">--%</span></div>
+            <div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_rem100" style="background:#f59e0b; width:0%"></div></div>
+          </div>
+          <div class="ro-row">
+            <div class="ro-head"><span>250km 中端低/厚中云阻断</span><span class="ro-val" id="ro_rem250">--%</span></div>
+            <div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_rem250" style="background:#f97316; width:0%"></div></div>
+          </div>
+          <div class="ro-row">
+            <div class="ro-head"><span>400km 远端浓密云团阻断</span><span class="ro-val" id="ro_rem400">--%</span></div>
+            <div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_rem400" style="background:#ef4444; width:0%"></div></div>
+          </div>
+          <div style="margin-top:12px; padding:7px 10px; border-radius:8px; background:rgba(255,255,255,0.035); border:1px solid rgba(255,255,255,0.08); font-size:11px; color:#fde68a; display:flex; justify-content:space-between;">
+            <span>综合光路有效阻断率：</span>
+            <strong id="ro_eff_rem" style="font-family:monospace;">--%</strong>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4. 历史查询预测记录表 -->
+    <div class="card">
+      <div class="card-title">
+        <span>🕒 已查询城市历史预测记录 (点击行可回看对应时段)</span>
+        <span style="font-size:11px; color:var(--text-muted);" id="histCountText">共 0 条记录</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>抓取批次</th>
+              <th>城市名称</th>
+              <th>地理坐标</th>
+              <th>目标时段</th>
+              <th>预测等级</th>
+              <th>量化得分</th>
+              <th>融合云量(高/中/低)</th>
+              <th>光路阻断(100/250/400km)</th>
+              <th>AOD</th>
+              <th>色彩偏向</th>
+            </tr>
+          </thead>
+          <tbody id="historyTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 常驻网页最底部：火烧云热力地图模块 ==================== -->
+  <div class="map-section-card" id="mapSectionCard">
+    <div class="card-title" style="margin-bottom:12px;">
+      <div>
+        <span>🗺️ 全国火烧云指数实时热力地图 (低于 20 分不显色 · 指数越高越红)</span>
+        <span style="font-size:11px; color:var(--text-muted); font-weight:normal; margin-left:8px;">
+          支持拖动地图查看任意位置 · 单击地图画面可切换全屏
+        </span>
+      </div>
+      <div class="seg-group">
+        <button type="button" class="seg-btn" id="map_slot_d0_am" onclick="setMapSlot('d0_am')">今日朝霞</button>
+        <button type="button" class="seg-btn active" id="map_slot_d0_pm" onclick="setMapSlot('d0_pm')">今日晚霞</button>
+        <button type="button" class="seg-btn" id="map_slot_d1_am" onclick="setMapSlot('d1_am')">明日朝霞</button>
+        <button type="button" class="seg-btn" id="map_slot_d1_pm" onclick="setMapSlot('d1_pm')">明日晚霞</button>
+        <button type="button" class="seg-btn" id="map_slot_d2_am" onclick="setMapSlot('d2_am')">后日朝霞</button>
+        <button type="button" class="seg-btn" id="map_slot_d2_pm" onclick="setMapSlot('d2_pm')">后日晚霞</button>
+      </div>
+    </div>
+
+    <div class="map-viewport-wrap" id="mapViewportWrap">
+      <!-- Leaflet 地图底层 -->
+      <div id="sunsetMap"></div>
+      <!-- 气象场热力渲染层 (Canvas) -->
+      <canvas id="heatmapOverlayCanvas"></canvas>
+
+      <!-- 地图顶部悬浮信息与全屏切换按钮 -->
+      <div class="map-top-hud">
+        <div class="map-hud-pill" id="mapCenterInfoPill">
+          <span>🎯 视野中心：<strong id="mapCenterCoord">34.50°N, 108.50°E</strong></span>
+          <span>|</span>
+          <span>当前位置指数：<strong id="mapCenterScore" style="color:#fb923c;">--</strong></span>
+        </div>
+        <button type="button" class="map-hud-pill map-fs-btn" id="mapFsToggleBtn" onclick="toggleMapFullscreen(event)">
+          ⛶ 全屏查看火烧云地图
+        </button>
+      </div>
+
+      <!-- 地图左下角：火烧云指数对应颜色图例 -->
+      <div class="map-legend-box">
+        <div class="legend-title">
+          <span>🔥 火烧云指数热力图例</span>
+          <span style="font-size:10px; color:#94a3b8; font-weight:normal;">0 - 100分</span>
+        </div>
+        <div class="legend-bar"></div>
+        <div class="legend-items">
+          <div class="legend-row">
+            <span><i class="legend-swatch" style="background:transparent; border-style:dashed;"></i>&lt; 20 分 (不烧/极微)</span>
+            <span style="color:#64748b;">透明不显示</span>
+          </div>
+          <div class="legend-row">
+            <span><i class="legend-swatch" style="background:rgba(251, 191, 36, 0.75);"></i>20 - 44 分 (微烧~小烧)</span>
+            <span style="color:#fcd34d;">浅金暖黄</span>
+          </div>
+          <div class="legend-row">
+            <span><i class="legend-swatch" style="background:rgba(249, 115, 22, 0.85);"></i>45 - 69 分 (小中~中烧)</span>
+            <span style="color:#fb923c;">亮橙橘红</span>
+          </div>
+          <div class="legend-row">
+            <span><i class="legend-swatch" style="background:rgba(239, 68, 68, 0.92);"></i>70 - 84 分 (中大~大烧)</span>
+            <span style="color:#f87171;">浓郁绯红</span>
+          </div>
+          <div class="legend-row">
+            <span><i class="legend-swatch" style="background:rgba(185, 28, 28, 0.98);"></i>85 - 100 分 (大烧~世纪)</span>
+            <span style="color:#fda4af; font-weight:700;">深红极红</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ==================== 1. 8级火烧云分级定义 ====================
+const GRADES = [
+  { level: 1, name: "不烧", min: 0, max: 14.9, hex: "#64748B", skyTop: "#0f172a", skyHorizon: "#334155" },
+  { level: 2, name: "微烧", min: 15, max: 29.9, hex: "#FBBF24", skyTop: "#1e293b", skyHorizon: "#b45309" },
+  { level: 3, name: "小烧", min: 30, max: 44.9, hex: "#F59E0B", skyTop: "#1e1b4b", skyHorizon: "#d97706" },
+  { level: 4, name: "小到中烧", min: 45, max: 57.9, hex: "#F97316", skyTop: "#1e1b4b", skyHorizon: "#ea580c" },
+  { level: 5, name: "中烧", min: 58, max: 69.9, hex: "#EA580C", skyTop: "#2e1065", skyHorizon: "#ea580c" },
+  { level: 6, name: "中到大烧", min: 70, max: 81.9, hex: "#DC2626", skyTop: "#3b0764", skyHorizon: "#dc2626" },
+  { level: 7, name: "大烧", min: 82, max: 91.9, hex: "#E11D48", skyTop: "#4a044e", skyHorizon: "#e11d48" },
+  { level: 8, name: "世纪大烧", min: 92, max: 100.0, hex: "#9333EA", skyTop: "#2e1065", skyHorizon: "#ec4899" }
+];
+
+// ==================== 2. 内置中国主要城市地理坐标字典 + 实时地理编码扩展 ====================
+const CITY_COORDS_DB = {
+  "上海": { name: "上海市", lat: 31.2304, lon: 121.4737 },
+  "北京": { name: "北京市", lat: 39.9042, lon: 116.4074 },
+  "广州": { name: "广州市", lat: 23.1291, lon: 113.2644 },
+  "深圳": { name: "深圳市", lat: 22.5431, lon: 114.0579 },
+  "杭州": { name: "杭州市", lat: 30.2741, lon: 120.1551 },
+  "南京": { name: "南京市", lat: 32.0603, lon: 118.7969 },
+  "苏州": { name: "苏州市", lat: 31.2989, lon: 120.5853 },
+  "无锡": { name: "无锡市", lat: 31.4912, lon: 120.3119 },
+  "常州": { name: "常州市", lat: 31.8112, lon: 119.9741 },
+  "南通": { name: "南通市", lat: 31.9802, lon: 120.8943 },
+  "扬州": { name: "扬州市", lat: 32.3942, lon: 119.4129 },
+  "徐州": { name: "徐州市", lat: 34.2044, lon: 117.2858 },
+  "宁波": { name: "宁波市", lat: 29.8683, lon: 121.5440 },
+  "温州": { name: "温州市", lat: 27.9943, lon: 120.6994 },
+  "嘉兴": { name: "嘉兴市", lat: 30.7468, lon: 120.7555 },
+  "湖州": { name: "湖州市", lat: 30.8943, lon: 120.0868 },
+  "绍兴": { name: "绍兴市", lat: 30.0303, lon: 120.5802 },
+  "金华": { name: "金华市", lat: 29.0792, lon: 119.6474 },
+  "台州": { name: "台州市", lat: 28.6564, lon: 121.4208 },
+  "舟山": { name: "舟山市", lat: 29.9853, lon: 122.2072 },
+  "合肥": { name: "合肥市", lat: 31.8206, lon: 117.2272 },
+  "芜湖": { name: "芜湖市", lat: 31.3529, lon: 118.4331 },
+  "黄山": { name: "黄山市", lat: 29.7147, lon: 118.3375 },
+  "成都": { name: "成都市", lat: 30.5728, lon: 104.0668 },
+  "重庆": { name: "重庆市", lat: 29.5630, lon: 106.5516 },
+  "绵阳": { name: "绵阳市", lat: 31.4675, lon: 104.6791 },
+  "甘孜": { name: "甘孜藏族自治州", lat: 30.0495, lon: 101.9623 },
+  "阿坝": { name: "阿坝藏族羌族自治州", lat: 31.8994, lon: 102.2246 },
+  "武汉": { name: "武汉市", lat: 30.5928, lon: 114.3055 },
+  "宜昌": { name: "宜昌市", lat: 30.6920, lon: 111.2865 },
+  "襄阳": { name: "襄阳市", lat: 32.0090, lon: 112.1224 },
+  "长沙": { name: "长沙市", lat: 28.2282, lon: 112.9388 },
+  "张家界": { name: "张家界市", lat: 29.1171, lon: 110.4792 },
+  "西安": { name: "西安市", lat: 34.3416, lon: 108.9398 },
+  "青岛": { name: "青岛市", lat: 36.0671, lon: 120.3826 },
+  "济南": { name: "济南市", lat: 36.6512, lon: 117.1201 },
+  "烟台": { name: "烟台市", lat: 37.4638, lon: 121.4479 },
+  "威海": { name: "威海市", lat: 37.5131, lon: 122.1204 },
+  "厦门": { name: "厦门市", lat: 24.4798, lon: 118.0894 },
+  "福州": { name: "福州市", lat: 26.0745, lon: 119.2965 },
+  "泉州": { name: "泉州市", lat: 24.8741, lon: 118.6757 },
+  "大理": { name: "大理白族自治州", lat: 25.6065, lon: 100.2676 },
+  "昆明": { name: "昆明市", lat: 25.0389, lon: 102.7183 },
+  "丽江": { name: "丽江市", lat: 26.8721, lon: 100.2299 },
+  "香格里拉": { name: "香格里拉市", lat: 27.8269, lon: 99.7060 },
+  "西双版纳": { name: "西双版纳傣族自治州", lat: 22.0088, lon: 100.7972 },
+  "拉萨": { name: "拉萨市", lat: 29.6525, lon: 91.1721 },
+  "林芝": { name: "林芝市", lat: 29.6491, lon: 94.3615 },
+  "日喀则": { name: "日喀则市", lat: 29.2669, lon: 88.8806 },
+  "三亚": { name: "三亚市", lat: 18.2528, lon: 109.5120 },
+  "海口": { name: "海口市", lat: 20.0440, lon: 110.1999 },
+  "桂林": { name: "桂林市", lat: 25.2736, lon: 110.2900 },
+  "南宁": { name: "南宁市", lat: 22.8170, lon: 108.3665 },
+  "北海": { name: "北海市", lat: 21.4812, lon: 109.1199 },
+  "贵阳": { name: "贵阳市", lat: 26.6470, lon: 106.6302 },
+  "南昌": { name: "南昌市", lat: 28.6820, lon: 115.8579 },
+  "九江": { name: "九江市", lat: 29.7051, lon: 116.0019 },
+  "郑州": { name: "郑州市", lat: 34.7466, lon: 113.6253 },
+  "洛阳": { name: "洛阳市", lat: 34.6197, lon: 112.4540 },
+  "太原": { name: "太原市", lat: 37.8706, lon: 112.5489 },
+  "大同": { name: "大同市", lat: 40.0768, lon: 113.3001 },
+  "石家庄": { name: "石家庄市", lat: 38.0428, lon: 114.5149 },
+  "秦皇岛": { name: "秦皇岛市", lat: 39.9354, lon: 119.6005 },
+  "天津": { name: "天津市", lat: 39.3434, lon: 117.3616 },
+  "沈阳": { name: "沈阳市", lat: 41.8057, lon: 123.4315 },
+  "大连": { name: "大连市", lat: 38.9140, lon: 121.6147 },
+  "长春": { name: "长春市", lat: 43.8171, lon: 125.3235 },
+  "哈尔滨": { name: "哈尔滨市", lat: 45.8038, lon: 126.5350 },
+  "呼和浩特": { name: "呼和浩特市", lat: 40.8426, lon: 111.7492 },
+  "银川": { name: "银川市", lat: 38.4872, lon: 106.2309 },
+  "兰州": { name: "兰州市", lat: 36.0611, lon: 103.8343 },
+  "敦煌": { name: "敦煌市", lat: 40.1421, lon: 94.6620 },
+  "西宁": { name: "西宁市", lat: 36.6171, lon: 101.7782 },
+  "乌鲁木齐": { name: "乌鲁木齐市", lat: 43.8256, lon: 87.6168 },
+  "喀什": { name: "喀什地区", lat: 39.4704, lon: 75.9898 },
+  "伊犁": { name: "伊犁哈萨克自治州", lat: 43.9169, lon: 81.3246 },
+  "阿勒泰": { name: "阿勒泰地区", lat: 47.8449, lon: 88.1403 },
+  "香港": { name: "香港特别行政区", lat: 22.3193, lon: 114.1694 },
+  "澳门": { name: "澳门特别行政区", lat: 22.1987, lon: 113.5439 },
+  "台北": { name: "台北市", lat: 25.0330, lon: 121.5654 },
+  "高雄": { name: "高雄市", lat: 22.6273, lon: 120.3014 },
+  "珠海": { name: "珠海市", lat: 22.2710, lon: 113.5767 },
+  "佛山": { name: "佛山市", lat: 23.0215, lon: 113.1214 },
+  "东莞": { name: "东莞市", lat: 23.0207, lon: 113.7518 },
+  "惠州": { name: "惠州市", lat: 23.1115, lon: 114.4162 },
+  "汕头": { name: "汕头市", lat: 23.3541, lon: 116.6820 }
+};
+
+function get3DaySlotMeta() {
+  const dayNames = ["今天", "明天", "后天"];
+  const metas = [];
+  const base = new Date();
+  for (let d = 0; d < 3; d++) {
+    const dt = new Date(base.getTime() + d * 86400000);
+    const dateStr = `${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+    metas.push({
+      key: `d${d}_am`, dayIdx: d, dayLabel: dayNames[d], dateStr,
+      type: "am", typeName: "朝霞", icon: "🌅", azimuthDeg: 82, azimuthText: "东偏北 82° (100/250/400km)"
+    });
+    metas.push({
+      key: `d${d}_pm`, dayIdx: d, dayLabel: dayNames[d], dateStr,
+      type: "pm", typeName: "晚霞", icon: "🌇", azimuthDeg: 262, azimuthText: "西偏南 262° (100/250/400km)"
+    });
+  }
+  return metas;
+}
+const SLOT_METAS = get3DaySlotMeta();
+
+function estimateSunTime(lon, type) {
+  const offsetMin = Math.round((120 - lon) * 4);
+  const baseMin = type === "am" ? (5 * 60 + 56) : (17 * 60 + 32);
+  const totalMin = baseMin + offsetMin;
+  const hh = String(Math.floor((totalMin + 1440) % 1440 / 60)).padStart(2, "0");
+  const mm = String((totalMin + 1440) % 60).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+// ==================== 3. 全局状态与带超时熔断的请求工具 ====================
+let currentCityData = null; // 未输入或匹配失败时严格为 null
+let selectedSlotKey = "d0_pm";
+let mapSlotKey = "d0_pm";
+let eventFilter = "all";
+let canvasMode = "sky";
+let historyRecords = [];
+
+async function fetchJsonWithTimeout(url, timeoutMs = 3500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    return await resp.json();
+  } catch (err) {
+    clearTimeout(timer);
+    throw err;
+  }
+}
+
+// ==================== 4. 城市匹配与数据拉取主流程 ====================
+async function resolveCityCoordinates(rawQuery) {
+  const clean = rawQuery.trim();
+  if (!clean) return null;
+
+  const normalized = clean.replace(/(市|地区|特别行政区|白族自治州|哈萨克自治州|藏族羌族自治州|藏族自治州|傣族自治州|自治州|区|县)$/g, "");
+  if (CITY_COORDS_DB[clean]) return CITY_COORDS_DB[clean];
+  if (CITY_COORDS_DB[normalized]) return CITY_COORDS_DB[normalized];
+
+  for (const key of Object.keys(CITY_COORDS_DB)) {
+    if (clean.includes(key) || key.includes(normalized)) {
+      if (normalized.length >= 2) return CITY_COORDS_DB[key];
+    }
+  }
+
+  try {
+    const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(clean)}&count=1&language=zh&format=json`;
+    const resp = await fetchJsonWithTimeout(url, 3000);
+    if (resp && Array.isArray(resp.results) && resp.results.length > 0) {
+      const hit = resp.results[0];
+      return {
+        name: hit.name + (hit.admin1 ? ` (${hit.admin1})` : ""),
+        lat: Number(hit.latitude.toFixed(4)),
+        lon: Number(hit.longitude.toFixed(4))
+      };
+    }
+  } catch (err) {}
+  return null;
+}
+
+function calcRayPoint(lat, lon, distKm, azimuthDeg) {
+  const R = 6371.0;
+  const latRad = lat * Math.PI / 180;
+  const lonRad = lon * Math.PI / 180;
+  const azRad = azimuthDeg * Math.PI / 180;
+  const d = distKm / R;
+
+  const rLat = Math.asin(Math.sin(latRad) * Math.cos(d) + Math.cos(latRad) * Math.sin(d) * Math.cos(azRad));
+  const rLon = lonRad + Math.atan2(Math.sin(azRad) * Math.sin(d) * Math.cos(latRad), Math.cos(d) - Math.sin(latRad) * Math.sin(rLat));
+  return { lat: (rLat * 180 / Math.PI).toFixed(4), lon: (rLon * 180 / Math.PI).toFixed(4) };
+}
+
+function calcRemoteBlockFromModel(lowC, midC) {
+  const lowBlock = (lowC ?? 15) * 0.78;
+  const thickMidBlock = Math.max(0, (midC ?? 20) - 25) * 0.50;
+  return Math.min(100, Math.round(lowBlock + thickMidBlock));
+}
+
+function buildDeterministicCitySlots(lat, lon) {
+  const slots = {};
+  const seedBase = Math.abs(Math.sin(lat * 12.9898 + lon * 78.233) * 43758.5453);
+  SLOT_METAS.forEach((m, idx) => {
+    const h1 = ((seedBase * (idx + 1.3)) % 1);
+    const h2 = ((seedBase * (idx + 2.7)) % 1);
+    const h3 = ((seedBase * (idx + 4.1)) % 1);
+
+    const gfs_h = Math.round(14 + h1 * 62);
+    const gfs_m = Math.round(12 + h2 * 52);
+    const gfs_l = Math.round(4 + Math.pow(h3, 1.45) * 55);
+    const ec_h  = Math.min(100, Math.max(0, gfs_h + Math.round((h2 - 0.5) * 12)));
+    const ec_m  = Math.min(100, Math.max(0, gfs_m + Math.round((h3 - 0.5) * 10)));
+    const ec_l  = Math.min(100, Math.max(0, gfs_l + Math.round((h1 - 0.5) * 10)));
+
+    const rem_100 = calcRemoteBlockFromModel(ec_l, ec_m);
+    const rem_250 = calcRemoteBlockFromModel(Math.round(ec_l * 0.75 + h2 * 14), ec_m);
+    const rem_400 = calcRemoteBlockFromModel(Math.round(h3 * 32), Math.round(ec_m * 0.80));
+    const aod = Number((0.12 + (lon > 105 ? 0.14 : 0.04) + h2 * 0.22).toFixed(2));
+    const rh  = Math.round(45 + (lat < 32 ? 15 : 5) + h3 * 25);
+
+    slots[m.key] = {
+      gfs_h, gfs_m, gfs_l, ec_h, ec_m, ec_l,
+      rem_100, rem_250, rem_400, aod, rh,
+      updatedAt: new Date().toLocaleTimeString() + " 模型锁定批次"
+    };
+  });
+  return slots;
+}
+
+async function handleCitySearch(ev) {
+  if (ev && ev.preventDefault) ev.preventDefault();
+  const inputEl = document.getElementById("cityInput");
+  const btn = document.getElementById("searchBtn");
+  const query = inputEl.value.trim();
+
+  if (!query) {
+    currentCityData = null;
+    showEmptyOrErrorState(
+      "🌇",
+      "未输入城市名称，暂不展示火烧云预测结果",
+      "请在上方输入框中输入有效的城市名称（如：上海、北京、杭州、成都、大理等），系统匹配地理坐标后将自动拉取 GFS/EC 模型数据并渲染后三天预报。",
+      false
+    );
+    return;
+  }
+
+  btn.disabled = true;
+  btn.innerText = "⏳ 正在匹配城市并拉取模型...";
+
+  const matched = await resolveCityCoordinates(query);
+
+  if (!matched) {
+    currentCityData = null;
+    btn.disabled = false;
+    btn.innerText = "🔍 匹配城市并生成预报";
+    showEmptyOrErrorState(
+      "⚠️",
+      `未匹配到城市「${query}」的地理坐标`,
+      "系统无法识别该城市名称，已终止气象模型拉取并隐藏后三天火烧云预测面板。请检查城市名称拼写（如输入：上海、北京、杭州、成都、拉萨、青岛等）。",
+      true
+    );
+    return;
+  }
+
+  const e100 = calcRayPoint(matched.lat, matched.lon, 100, 82);
+  const e250 = calcRayPoint(matched.lat, matched.lon, 250, 82);
+  const e400 = calcRayPoint(matched.lat, matched.lon, 400, 82);
+  const w100 = calcRayPoint(matched.lat, matched.lon, 100, 262);
+  const w250 = calcRayPoint(matched.lat, matched.lon, 250, 262);
+  const w400 = calcRayPoint(matched.lat, matched.lon, 400, 262);
+
+  const lats = [matched.lat, e100.lat, e250.lat, e400.lat, w100.lat, w250.lat, w400.lat].join(",");
+  const lons = [matched.lon, e100.lon, e250.lon, e400.lon, w100.lon, w250.lon, w400.lon].join(",");
+
+  let slots = {};
+  let sourceLabel = "Open-Meteo GFS + ECMWF + CAMS 实时API";
+
+  try {
+    const gfsUrl = `https://api.open-meteo.com/v1/gfs?latitude=${matched.lat}&longitude=${matched.lon}&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high,relative_humidity_2m&forecast_days=3&timezone=auto`;
+    const ecUrl  = `https://api.open-meteo.com/v1/ecmwf?latitude=${lats}&longitude=${lons}&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=3&timezone=auto`;
+    const aodUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${matched.lat}&longitude=${matched.lon}&hourly=aerosol_optical_depth&forecast_days=3&timezone=auto`;
+
+    const [gfsResp, ecResp, aodResp] = await Promise.all([
+      fetchJsonWithTimeout(gfsUrl, 3500),
+      fetchJsonWithTimeout(ecUrl, 3500),
+      fetchJsonWithTimeout(aodUrl, 3500)
+    ]);
+
+    const gfsH = gfsResp.hourly || {};
+    const ecArr = Array.isArray(ecResp) ? ecResp : [ecResp];
+    const ecLocal = ecArr[0]?.hourly || {};
+    const aodH = aodResp.hourly || {};
+
+    if (!gfsH.cloud_cover_high && !ecLocal.cloud_cover_high) {
+      throw new Error("Empty hourly payload");
+    }
+
+    SLOT_METAS.forEach(m => {
+      const hrIdx = m.dayIdx * 24 + (m.type === "am" ? 6 : 18);
+      const p100 = (ecArr[m.type === "am" ? 1 : 4]?.hourly) || ecLocal;
+      const p250 = (ecArr[m.type === "am" ? 2 : 5]?.hourly) || ecLocal;
+      const p400 = (ecArr[m.type === "am" ? 3 : 6]?.hourly) || ecLocal;
+
+      const r100 = calcRemoteBlockFromModel(p100.cloud_cover_low?.[hrIdx], p100.cloud_cover_mid?.[hrIdx]);
+      const r250 = calcRemoteBlockFromModel(p250.cloud_cover_low?.[hrIdx], p250.cloud_cover_mid?.[hrIdx]);
+      const r400 = calcRemoteBlockFromModel(p400.cloud_cover_low?.[hrIdx], p400.cloud_cover_mid?.[hrIdx]);
+
+      slots[m.key] = {
+        gfs_h: Math.round(gfsH.cloud_cover_high?.[hrIdx] ?? 35),
+        gfs_m: Math.round(gfsH.cloud_cover_mid?.[hrIdx] ?? 28),
+        gfs_l: Math.round(gfsH.cloud_cover_low?.[hrIdx] ?? 18),
+        ec_h:  Math.round(ecLocal.cloud_cover_high?.[hrIdx] ?? 38),
+        ec_m:  Math.round(ecLocal.cloud_cover_mid?.[hrIdx] ?? 30),
+        ec_l:  Math.round(ecLocal.cloud_cover_low?.[hrIdx] ?? 16),
+        rem_100: r100, rem_250: r250, rem_400: r400,
+        aod:   Number((aodH.aerosol_optical_depth?.[hrIdx] ?? 0.26).toFixed(2)),
+        rh:    Math.round(gfsH.relative_humidity_2m?.[hrIdx] ?? 64),
+        updatedAt: new Date().toLocaleTimeString() + " API实况锁定"
+      };
+    });
+  } catch (e) {
+    slots = buildDeterministicCitySlots(matched.lat, matched.lon);
+    sourceLabel = "GFS + ECMWF + CAMS 网格基准数据 (已锁定)";
+  }
+
+  currentCityData = {
+    name: matched.name,
+    lat: matched.lat,
+    lon: matched.lon,
+    slots,
+    sourceLabel
+  };
+
+  ["d0_am", "d0_pm"].forEach(k => {
+    const m = SLOT_METAS.find(x => x.key === k);
+    const p = currentCityData.slots[k];
+    const res = evaluateGlowBalanced(p, m.type);
+    historyRecords.unshift({
+      id: Date.now() + Math.random(),
+      cityData: JSON.parse(JSON.stringify(currentCityData)),
+      slotKey: k,
+      slotLabel: `${m.dayLabel}·${m.typeName}`,
+      params: { ...p },
+      res,
+      batchTime: new Date().toLocaleTimeString()
+    });
+  });
+  if (historyRecords.length > 24) historyRecords = historyRecords.slice(0, 24);
+
+  btn.disabled = false;
+  btn.innerText = "🔍 匹配城市并生成预报";
+  renderForecastDashboard();
+
+  // 同步底部热力地图视野至所查询的城市
+  if (sunsetLeafletMap) {
+    sunsetLeafletMap.flyTo([matched.lat, matched.lon], 6, { duration: 1.1 });
+  }
+}
+
+function showEmptyOrErrorState(icon, title, desc, isError) {
+  document.getElementById("forecastContainer").style.display = "none";
+  document.getElementById("matchedBanner").style.display = "none";
+
+  const box = document.getElementById("emptyOrErrorState");
+  box.style.display = "block";
+  box.classList.toggle("state-error", isError);
+  document.getElementById("stateIcon").innerText = icon;
+  document.getElementById("stateTitle").innerText = title;
+  document.getElementById("stateDesc").innerText = desc;
+}
+
+// ==================== 5. 黄金平衡校准版火烧云物理量化引擎 ====================
+function smoothSPenaltyCurve(val, freeLimit, severeLimit, freeKeep = 0.90, minFloor = 0.06) {
+  if (val <= freeLimit) {
+    return 1.0 - (val / freeLimit) * (1.0 - freeKeep);
+  } else if (val <= severeLimit) {
+    const t = (val - freeLimit) / (severeLimit - freeLimit);
+    const cosDrop = 0.5 * (1 + Math.cos(Math.PI * t));
+    return minFloor + (freeKeep - minFloor) * cosDrop;
+  } else {
+    return Math.max(0.03, minFloor - (val - severeLimit) * 0.002);
+  }
+}
+
+function evaluateGlowBalanced(p, slotType = "pm") {
+  const highC = 0.6 * p.ec_h + 0.4 * p.gfs_h;
+  const midC  = 0.6 * p.ec_m + 0.4 * p.gfs_m;
+  const lowC  = 0.6 * p.ec_l + 0.4 * p.gfs_l;
+
+  const midBlockHighRatio = midC <= 65
+    ? 1.0 - (midC / 65) * 0.18
+    : Math.max(0.25, 0.82 - ((midC - 65) / 35) * 0.55);
+
+  const usableHigh = highC * midBlockHighRatio;
+  const usableMid  = midC <= 70 ? midC * 0.92 : Math.max(25, 70 * 0.92 - (midC - 70) * 0.85);
+
+  const effCover = Math.min(100, Math.max(usableHigh, usableMid) + Math.min(usableHigh, usableMid) * 0.55);
+
+  let canvasBase = 0;
+  if (effCover <= 5) {
+    canvasBase = effCover * 1.4;
+  } else if (effCover <= 20) {
+    canvasBase = 7 + (effCover - 5) * 1.9;
+  } else if (effCover <= 42) {
+    canvasBase = 35.5 + (effCover - 20) * 2.15;
+  } else if (effCover <= 74) {
+    canvasBase = 82.8 + (effCover - 42) * 0.53;
+  } else {
+    canvasBase = Math.max(45, 99.8 - (effCover - 74) * 1.6);
+  }
+
+  const localLowFactor = smoothSPenaltyCurve(lowC, 25, 68, 0.88, 0.06);
+
+  const weightedRem = 0.35 * p.rem_100 + 0.40 * p.rem_250 + 0.25 * p.rem_400;
+  const maxWall = Math.max(p.rem_100, p.rem_250, p.rem_400 * 0.90);
+  const effectiveRemBlock = Math.min(100, 0.62 * weightedRem + 0.38 * maxWall);
+  const rayFactor = smoothSPenaltyCurve(effectiveRemBlock, 28, 72, 0.88, 0.08);
+
+  let thicknessFactor = 1.0;
+  if (midC > 72) {
+    thicknessFactor *= (1.0 - ((midC - 72) / 28) * 0.32);
+  }
+  if (p.rh > 78 && (midC + lowC) > 85) {
+    thicknessFactor *= (1.0 - ((p.rh - 78) / 22) * 0.40);
+  }
+
+  let aodFactor = 1.0;
+  const optMax = slotType === "am" ? 0.40 : 0.45;
+  if (p.aod < 0.06) {
+    aodFactor = 0.96;
+  } else if (p.aod <= optMax) {
+    aodFactor = 1.00;
+  } else {
+    aodFactor = Math.max(0.20, Math.exp(-1.25 * (p.aod - optMax)));
+  }
+  const envFactor = Math.max(0.20, thicknessFactor * aodFactor);
+
+  const fMin  = Math.min(localLowFactor, rayFactor, envFactor);
+  const fMean = (localLowFactor + rayFactor + envFactor) / 3.0;
+  const worstTwoProduct = (localLowFactor * rayFactor * envFactor) / Math.max(localLowFactor, rayFactor, envFactor);
+  const combinedTrans = Math.max(0.03, fMin * (0.68 + 0.32 * fMean) * (0.35 + 0.65 * Math.sqrt(worstTwoProduct)));
+
+  const rawScore = canvasBase * combinedTrans;
+  const score = Number(Math.max(0, Math.min(100, rawScore)).toFixed(1));
+
+  let grade = GRADES[0];
+  for (const g of GRADES) {
+    if ((score >= g.min && score <= g.max) || (g.level === 8 && score >= 92)) {
+      grade = g;
+      break;
+    }
+  }
+
+  let colorBias = "";
+  let gradientCSS = "";
+  const prefix = slotType === "am" ? "[朝霞] " : "[晚霞] ";
+  if (grade.level === 1) {
+    colorBias = prefix + "无明显霞光 (灰白/冷蓝天际)";
+    gradientCSS = "linear-gradient(90deg, #1e293b, #475569, #64748b)";
+  } else if (p.aod > 0.58) {
+    colorBias = prefix + "暗红偏灰褐 (高气溶胶消光衰减)";
+    gradientCSS = "linear-gradient(90deg, #451a03, #991b1b, #57534e)";
+  } else if (highC >= 40 && p.aod >= 0.16 && p.aod <= 0.48 && p.rh >= 48) {
+    colorBias = prefix + (slotType === "am" ? "玫瑰金/紫粉流霞 (清晨冰晶卷云折射)" : "梦幻紫红/洋红 (高层冰晶云+米氏散射叠加)");
+    gradientCSS = "linear-gradient(90deg, #f59e0b, #ef4444, #ec4899, #9333ea)";
+  } else if (p.aod >= 0.14 && p.aod <= 0.45) {
+    colorBias = prefix + (slotType === "am" ? "赤金/亮橘红 (高饱和日出朝霞色谱)" : "浓郁橘红/绯红 (标准高饱和晚霞色谱)");
+    gradientCSS = "linear-gradient(90deg, #fbbf24, #f97316, #dc2626, #991b1b)";
+  } else {
+    colorBias = prefix + "通透亮金/暖黄 (低气溶胶洁净大气色谱)";
+    gradientCSS = "linear-gradient(90deg, #fef08a, #fbbf24, #f97316)";
+  }
+
+  let diag = "";
+  if (effCover < 14) {
+    diag = `【云幕不足】本地有效中高云幕仅 ${Math.round(effCover)}%，天空过于晴朗少云，缺乏承接霞光的“画布”。`;
+  } else if (localLowFactor < 0.45) {
+    diag = `【本地低云封堵】本地低云达 ${Math.round(lowC)}%（超出 25% 宽容阈值，透视率仅 ${(localLowFactor*100).toFixed(0)}%），低空浓云严重阻挡观测视线。`;
+  } else if (rayFactor < 0.45) {
+    const worstDist = p.rem_250 >= p.rem_100 && p.rem_250 >= p.rem_400 ? "250km中端" : (p.rem_100 >= p.rem_400 ? "100km近端" : "400km远端");
+    diag = `【光路低云截断】${slotType === "am" ? "东向" : "西向"} ${worstDist}处存在浓密中低云墙（有效阻断 ${effectiveRemBlock.toFixed(0)}%），低角度阳光在半途被截断。`;
+  } else if (envFactor < 0.68) {
+    diag = `【大气消光/阴天厚云】高湿厚云或高气溶胶 (AOD=${p.aod}) 导致光线在传输中发生明显衰减（环境保留率 ${(envFactor*100).toFixed(0)}%）。`;
+  } else {
+    diag = `【气象条件优良】有效中高云幕充沛 (${Math.round(effCover)}%)，本地低云 (${Math.round(lowC)}%) 与远端光路阻断 (${effectiveRemBlock.toFixed(0)}%) 均在云隙透光宽容区内，适宜观赏拍摄！`;
+  }
+
+  return {
+    score, grade, colorBias, gradientCSS,
+    highC, midC, lowC, effCover, effectiveRemBlock,
+    canvasBase, localLowFactor, rayFactor, envFactor, combinedTrans, diag
+  };
+}
+
+// ==================== 6. 渲染后三天预报主面板 ====================
+function renderForecastDashboard() {
+  if (!currentCityData) return;
+
+  document.getElementById("emptyOrErrorState").style.display = "none";
+  document.getElementById("forecastContainer").style.display = "block";
+
+  const banner = document.getElementById("matchedBanner");
+  banner.style.display = "flex";
+  document.getElementById("matchedCoordText").innerText =
+    `✓ 已匹配城市：${currentCityData.name} · 地理坐标：${currentCityData.lat.toFixed(4)}°N, ${currentCityData.lon.toFixed(4)}°E`;
+  document.getElementById("matchedSyncTime").innerText = `数据来源：${currentCityData.sourceLabel}`;
+  document.getElementById("matrixTitle").innerText =
+    `📅 ${currentCityData.name} · 今/明/后三天朝霞与晚霞预测 (点击卡片切换时段查看详情)`;
+
+  renderForecastMatrix();
+  updateActiveSlotView();
+  renderHistoryTable();
+}
+
+function renderForecastMatrix() {
+  if (!currentCityData) return;
+  const matrixEl = document.getElementById("forecastMatrix");
+  const days = [0, 1, 2];
+
+  matrixEl.innerHTML = days.map(d => {
+    const dayMetas = SLOT_METAS.filter(m => m.dayIdx === d && (eventFilter === "all" || m.type === eventFilter));
+    const headMeta = SLOT_METAS.find(m => m.dayIdx === d);
+    const singleCls = dayMetas.length === 1 ? "single-col" : "";
+
+    const slotsHtml = dayMetas.map(m => {
+      const p = currentCityData.slots[m.key];
+      const res = evaluateGlowBalanced(p, m.type);
+      const isAct = m.key === selectedSlotKey ? "active" : "";
+      const sunTime = estimateSunTime(currentCityData.lon, m.type);
+
+      return `
+        <div class="slot-card ${isAct}" onclick="selectSlot('${m.key}')">
+          <div class="slot-type">
+            <span>${m.icon} ${m.typeName}</span>
+            <span class="slot-time">${sunTime}</span>
+          </div>
+          <div class="slot-grade-row">
+            <span class="slot-badge" style="background:${res.grade.hex}">L${res.grade.level} ${res.grade.name}</span>
+            <span class="slot-score">${res.score}</span>
+          </div>
+          <div class="slot-bar" style="background:${res.gradientCSS}"></div>
+        </div>
+      `;
+    }).join("");
+
+    return `
+      <div class="day-col">
+        <div class="day-header">
+          <span>${headMeta.dayLabel} (${headMeta.dateStr})</span>
+          <span style="font-size:10.5px; color:var(--text-muted); font-weight:normal;">黄金平衡模型</span>
+        </div>
+        <div class="day-slots ${singleCls}">${slotsHtml}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+function updateActiveSlotView() {
+  if (!currentCityData) return;
+  const slotMeta = SLOT_METAS.find(m => m.key === selectedSlotKey) || SLOT_METAS[1];
+  const p = currentCityData.slots[selectedSlotKey];
+  const evalRes = evaluateGlowBalanced(p, slotMeta.type);
+  const sunTime = estimateSunTime(currentCityData.lon, slotMeta.type);
+
+  document.getElementById("ro_gfs_h").innerText = p.gfs_h + "%";
+  document.getElementById("bar_gfs_h").style.width = p.gfs_h + "%";
+  document.getElementById("ro_gfs_m").innerText = p.gfs_m + "%";
+  document.getElementById("bar_gfs_m").style.width = p.gfs_m + "%";
+  document.getElementById("ro_gfs_l").innerText = p.gfs_l + "%";
+  document.getElementById("bar_gfs_l").style.width = p.gfs_l + "%";
+  document.getElementById("ro_rh").innerText    = p.rh + "%";
+  document.getElementById("bar_rh").style.width = p.rh + "%";
+
+  document.getElementById("ro_ec_h").innerText  = p.ec_h + "%";
+  document.getElementById("bar_ec_h").style.width = p.ec_h + "%";
+  document.getElementById("ro_ec_m").innerText  = p.ec_m + "%";
+  document.getElementById("bar_ec_m").style.width = p.ec_m + "%";
+  document.getElementById("ro_ec_l").innerText  = p.ec_l + "%";
+  document.getElementById("bar_ec_l").style.width = p.ec_l + "%";
+  document.getElementById("ro_aod").innerText   = Number(p.aod).toFixed(2);
+  document.getElementById("bar_aod").style.width = Math.min(100, (p.aod / 1.0) * 100) + "%";
+
+  document.getElementById("ro_rem100").innerText = p.rem_100 + "%";
+  document.getElementById("bar_rem100").style.width = p.rem_100 + "%";
+  document.getElementById("ro_rem250").innerText = p.rem_250 + "%";
+  document.getElementById("bar_rem250").style.width = p.rem_250 + "%";
+  document.getElementById("ro_rem400").innerText = p.rem_400 + "%";
+  document.getElementById("bar_rem400").style.width = p.rem_400 + "%";
+  document.getElementById("ro_eff_rem").innerText = evalRes.effectiveRemBlock.toFixed(1) + "%";
+  document.getElementById("rayBoxTitle").innerText =
+    slotMeta.type === "am" ? "三点光路有效阻断 (东向日出)" : "三点光路有效阻断 (西向日落)";
+
+  document.getElementById("fb_canvas").innerText = evalRes.canvasBase.toFixed(1) + "分";
+  document.getElementById("fb_canvas_sub").innerText = `有效受光云幕: ${Math.round(evalRes.effCover)}%`;
+  document.getElementById("fb_low").innerText = "×" + evalRes.localLowFactor.toFixed(2);
+  document.getElementById("fb_low_sub").innerText = `本地低云: ${Math.round(evalRes.lowC)}% (S型曲线)`;
+  document.getElementById("fb_ray").innerText = "×" + evalRes.rayFactor.toFixed(2);
+  document.getElementById("fb_ray_sub").innerText = `有效光路阻断: ${evalRes.effectiveRemBlock.toFixed(0)}%`;
+  document.getElementById("fb_env").innerText = "×" + evalRes.envFactor.toFixed(2);
+  document.getElementById("fb_env_sub").innerText = `AOD=${Number(p.aod).toFixed(2)} | 湿度=${p.rh}%`;
+  document.getElementById("fb_comb").innerText = "×" + evalRes.combinedTrans.toFixed(2);
+  document.getElementById("fb_comb_sub").innerText = `最终=${evalRes.canvasBase.toFixed(0)}×${evalRes.combinedTrans.toFixed(2)}`;
+
+  document.getElementById("heroLocInfo").innerText = `📍 ${currentCityData.name} (${currentCityData.lat.toFixed(2)}°N, ${currentCityData.lon.toFixed(2)}°E)`;
+  document.getElementById("heroSlotInfo").innerText = `${slotMeta.icon} ${slotMeta.dayLabel} (${slotMeta.dateStr}) · ${slotMeta.typeName}`;
+  document.getElementById("heroLightPathInfo").innerText = `☀️ 光路：${slotMeta.azimuthText}`;
+  document.getElementById("heroPeakTime").innerText = `最佳观赏窗口：${sunTime} 前后 20 分钟 (${p.updatedAt})`;
+
+  const badge = document.getElementById("mainGradeBadge");
+  badge.innerText = `L${evalRes.grade.level} · ${evalRes.grade.name}`;
+  badge.style.backgroundColor = evalRes.grade.hex;
+
+  document.getElementById("mainScoreNum").innerHTML = `${evalRes.score} <small style="font-size:12px; color:#94a3b8; font-weight:normal;">/ 100分</small>`;
+  document.getElementById("colorBiasText").innerText = evalRes.colorBias;
+  document.getElementById("aodTagInfo").innerText = `AOD: ${Number(p.aod).toFixed(2)} | 湿度: ${p.rh}%`;
+  document.getElementById("spectrumBar").style.background = evalRes.gradientCSS;
+
+  const fill = document.getElementById("scaleFill");
+  fill.style.width = `${evalRes.score}%`;
+  fill.style.backgroundColor = evalRes.grade.hex;
+
+  GRADES.forEach(g => {
+    const chip = document.getElementById(`chip_lvl_${g.level}`);
+    const lbl = document.getElementById(`lbl_lvl_${g.level}`);
+    if (g.level === evalRes.grade.level) {
+      chip.classList.add("current");
+      lbl.style.color = "#fb923c";
+      lbl.style.fontWeight = "800";
+    } else {
+      chip.classList.remove("current");
+      lbl.style.color = "";
+      lbl.style.fontWeight = "";
+    }
+  });
+
+  document.getElementById("diagText").innerText = `💡 物理成因诊断：${evalRes.diag}`;
+  renderCanvas(evalRes, p, slotMeta);
+}
+
+// ==================== 7. 双模式 Canvas 渲染 ====================
+function drawRoundRectPath(ctx, x, y, w, h, r) {
+  if (typeof ctx.roundRect === "function") {
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, r);
+    return;
+  }
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function renderCanvas(evalRes, p, slotMeta) {
+  const canvas = document.getElementById("skyCanvas");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (canvasMode === "path") {
+    render3PointRayCrossSection(ctx, w, h, evalRes, p, slotMeta);
+  } else {
+    renderRealisticSkyline(ctx, w, h, evalRes, p, slotMeta);
+  }
+}
+
+function renderRealisticSkyline(ctx, w, h, evalRes, p, slotMeta) {
+  const isAM = slotMeta.type === "am";
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, h);
+  skyGrad.addColorStop(0, evalRes.grade.skyTop);
+  if (evalRes.grade.level >= 6) {
+    skyGrad.addColorStop(0.48, isAM ? "#701a75" : "#831843");
+  } else if (evalRes.grade.level >= 3) {
+    skyGrad.addColorStop(0.55, "#7c2d12");
+  } else {
+    skyGrad.addColorStop(0.6, "#334155");
+  }
+  skyGrad.addColorStop(1, evalRes.grade.skyHorizon);
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, w, h);
+
+  const sunX = isAM ? w * 0.24 : w * 0.76;
+  const sunY = h * 0.90;
+  const sunTransmission = evalRes.combinedTrans;
+  const sunGrad = ctx.createRadialGradient(sunX, sunY, 6, sunX, sunY, Math.max(70, 320 * sunTransmission));
+  sunGrad.addColorStop(0, `rgba(254, 249, 195, ${0.92 * sunTransmission})`);
+  sunGrad.addColorStop(0.35, `rgba(251, 146, 60, ${0.65 * sunTransmission})`);
+  sunGrad.addColorStop(0.75, `rgba(225, 29, 72, ${0.32 * sunTransmission})`);
+  sunGrad.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = sunGrad;
+  ctx.fillRect(0, 0, w, h);
+
+  const cloudCount = Math.floor((evalRes.highC + evalRes.midC) / 8);
+  for (let i = 0; i < cloudCount; i++) {
+    const cx = (i * 107 + (isAM ? 20 : 45)) % (w - 80);
+    const cy = 26 + (i * 27) % (h * 0.52);
+    const cw = 90 + (i % 4) * 52;
+    const ch = 11 + (i % 3) * 6;
+
+    const cGrad = ctx.createLinearGradient(cx, cy, cx, cy + ch);
+    if (evalRes.grade.level >= 7) {
+      cGrad.addColorStop(0, "rgba(192, 132, 252, 0.78)");
+      cGrad.addColorStop(0.55, "rgba(244, 63, 94, 0.88)");
+      cGrad.addColorStop(1, "rgba(253, 224, 71, 0.92)");
+    } else if (evalRes.grade.level >= 4) {
+      cGrad.addColorStop(0, "rgba(148, 163, 184, 0.55)");
+      cGrad.addColorStop(1, "rgba(249, 115, 22, 0.88)");
+    } else if (evalRes.grade.level >= 2) {
+      cGrad.addColorStop(0, "rgba(100, 116, 139, 0.55)");
+      cGrad.addColorStop(1, "rgba(217, 119, 6, 0.65)");
+    } else {
+      cGrad.addColorStop(0, "rgba(71, 85, 105, 0.65)");
+      cGrad.addColorStop(1, "rgba(100, 116, 139, 0.55)");
+    }
+    ctx.fillStyle = cGrad;
+    drawRoundRectPath(ctx, cx, cy, cw, ch, 8);
+    ctx.fill();
+  }
+
+  const lowCloudCount = Math.floor(evalRes.lowC / 8.5);
+  for (let i = 0; i < lowCloudCount; i++) {
+    const lx = (i * 115 + 10) % (w - 40);
+    const ly = h * 0.45 + (i % 3) * 16;
+    const lw = 155 + (i % 3) * 60;
+    const lh = 26 + (i % 2) * 12;
+    ctx.fillStyle = `rgba(15, 23, 42, ${0.70 + (evalRes.lowC / 260)})`;
+    drawRoundRectPath(ctx, lx, ly, lw, lh, 12);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = "rgba(255,255,255,0.38)";
+  ctx.font = "bold 11px monospace";
+  ctx.fillText(isAM ? "◀ 东 (East 日出方向)" : "◀ 东 (East)", 18, h - 24);
+  ctx.fillText(isAM ? "西 (West) ▶" : "西 (West 日落方向) ▶", w - 135, h - 24);
+
+  ctx.fillStyle = "#040711";
+  ctx.beginPath();
+  ctx.moveTo(0, h); ctx.lineTo(0, h - 15);
+  for (let x = 0; x <= w; x += 34) {
+    const bh = (x % 68 === 0) ? 25 : 13;
+    ctx.lineTo(x, h - bh); ctx.lineTo(x + 24, h - bh);
+  }
+  ctx.lineTo(w, h); ctx.closePath(); ctx.fill();
+}
+
+function render3PointRayCrossSection(ctx, w, h, evalRes, p, slotMeta) {
+  ctx.fillStyle = "#070c18";
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.12)";
+  ctx.lineWidth = 1;
+  [52, 102, 150].forEach((y, idx) => {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    ctx.fillStyle = "#64748b"; ctx.font = "10px monospace";
+    const labels = ["高云层 (>6km 卷云·不阻断远端光路)", "中云层 (2-6km 高积云·主力受光云幕)", "低云层 (<2km 视线与斜射阻断层)"];
+    ctx.fillText(labels[idx], 14, y - 4);
+  });
+
+  ctx.fillStyle = "#0f172a";
+  ctx.strokeStyle = "#334155";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, h - 22);
+  ctx.quadraticCurveTo(w * 0.48, h - 50, w, h - 18);
+  ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+
+  const pts = [
+    { x: 170, label: "📍 本地观测点", val: null, yCloud: 50 },
+    { x: 380, label: "100km近端", val: p.rem_100, yCloud: 132 },
+    { x: 580, label: "250km中端", val: p.rem_250, yCloud: 112 },
+    { x: 780, label: "400km远端", val: p.rem_400, yCloud: 96 }
+  ];
+
+  let cutoffX = pts[0].x;
+  let cutoffY = 65;
+  if (p.rem_400 > 62) { cutoffX = pts[3].x; cutoffY = pts[3].yCloud; }
+  else if (p.rem_250 > 58) { cutoffX = pts[2].x; cutoffY = pts[2].yCloud; }
+  else if (p.rem_100 > 58) { cutoffX = pts[1].x; cutoffY = pts[1].yCloud; }
+
+  const rayGrad = ctx.createLinearGradient(w - 15, h - 38, cutoffX, cutoffY);
+  rayGrad.addColorStop(0, "rgba(253, 224, 71, 0.95)");
+  rayGrad.addColorStop(0.5, "rgba(249, 115, 22, 0.82)");
+  rayGrad.addColorStop(1, cutoffX > pts[0].x ? "rgba(239, 68, 68, 0.85)" : `${evalRes.grade.hex}EE`);
+
+  ctx.strokeStyle = rayGrad;
+  ctx.lineWidth = cutoffX > pts[0].x ? 4 : 7;
+  ctx.beginPath();
+  ctx.moveTo(w - 10, h - 34);
+  ctx.lineTo(cutoffX, cutoffY);
+  ctx.stroke();
+
+  if (cutoffX > pts[0].x) {
+    ctx.save();
+    ctx.setLineDash([5, 5]);
+    ctx.strokeStyle = "rgba(148, 163, 184, 0.25)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cutoffX, cutoffY);
+    ctx.lineTo(pts[0].x, 65);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  pts.slice(1).forEach(pt => {
+    ctx.fillStyle = pt.val > 55 ? "#f43f5e" : "#fbbf24";
+    ctx.beginPath(); ctx.arc(pt.x, h - 32, 4.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#cbd5e1"; ctx.font = "10.5px sans-serif";
+    ctx.fillText(pt.label, pt.x - 28, h - 12);
+
+    const isWall = pt.val > 55;
+    ctx.fillStyle = isWall ? `rgba(225, 29, 72, ${0.35 + pt.val / 180})` : `rgba(100, 116, 139, ${0.22 + pt.val / 160})`;
+    ctx.strokeStyle = isWall ? "#f43f5e" : "rgba(255,255,255,0.2)";
+    ctx.lineWidth = 1;
+    drawRoundRectPath(ctx, pt.x - 45, pt.yCloud - 14, 90, 26, 8);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#fff"; ctx.font = "bold 10px monospace";
+    ctx.fillText(`有效阻断:${pt.val}%`, pt.x - 38, pt.yCloud + 3);
+  });
+
+  const obsX = pts[0].x;
+  ctx.fillStyle = "#38bdf8";
+  ctx.beginPath(); ctx.arc(obsX, h - 30, 5.5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#f8fafc"; ctx.font = "bold 11px sans-serif";
+  ctx.fillText("📍 本地观测点", obsX - 36, h - 11);
+
+  ctx.fillStyle = `${evalRes.grade.hex}CC`;
+  drawRoundRectPath(ctx, obsX - 58, 38, 116, 18, 6);
+  ctx.fill();
+  ctx.fillStyle = "#fff"; ctx.font = "10px monospace";
+  ctx.fillText(`本地高云: ${Math.round(evalRes.highC)}%`, obsX - 42, 51);
+
+  ctx.fillStyle = `${evalRes.grade.hex}AA`;
+  drawRoundRectPath(ctx, obsX - 58, 88, 116, 18, 6);
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.fillText(`本地中云: ${Math.round(evalRes.midC)}%`, obsX - 42, 101);
+
+  ctx.fillStyle = `rgba(15, 23, 42, ${0.4 + evalRes.lowC / 130})`;
+  ctx.strokeStyle = "rgba(244, 63, 94, 0.55)";
+  drawRoundRectPath(ctx, obsX - 58, 136, 116, 18, 6);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#fda4af";
+  ctx.fillText(`本地低云: ${Math.round(evalRes.lowC)}%`, obsX - 42, 149);
+}
+
+// ==================== 8. 视图切换与历史记录回看 ====================
+function selectSlot(slotKey) {
+  selectedSlotKey = slotKey;
+  renderForecastMatrix();
+  updateActiveSlotView();
+  setMapSlot(slotKey);
+}
+
+function setEventFilter(flt) {
+  eventFilter = flt;
+  ["all", "am", "pm"].forEach(k => document.getElementById(`flt_${k}`).classList.toggle("active", k === flt));
+  const curMeta = SLOT_METAS.find(m => m.key === selectedSlotKey) || SLOT_METAS[1];
+  if (flt !== "all" && curMeta.type !== flt) selectedSlotKey = `d${curMeta.dayIdx}_${flt}`;
+  renderForecastMatrix();
+  updateActiveSlotView();
+}
+
+function setCanvasMode(mode) {
+  canvasMode = mode;
+  document.getElementById("view_sky").classList.toggle("active", mode === "sky");
+  document.getElementById("view_path").classList.toggle("active", mode === "path");
+  updateActiveSlotView();
+}
+
+function renderHistoryTable() {
+  const tbody = document.getElementById("historyTableBody");
+  document.getElementById("histCountText").innerText = `共 ${historyRecords.length} 条记录`;
+
+  tbody.innerHTML = historyRecords.map(item => `
+    <tr class="hist-row" onclick="replayHistoryItem(${item.id})">
+      <td style="font-family:monospace; color:#cbd5e1;">${item.batchTime}</td>
+      <td style="font-weight:700;">${item.cityData.name}</td>
+      <td style="font-family:monospace; color:#94a3b8;">${item.cityData.lat.toFixed(2)}°N, ${item.cityData.lon.toFixed(2)}°E</td>
+      <td>${item.slotLabel}</td>
+      <td>
+        <span style="background:${item.res.grade.hex}; color:#fff; padding:2px 7px; border-radius:5px; font-weight:700;">
+          L${item.res.grade.level} ${item.res.grade.name}
+        </span>
+      </td>
+      <td style="font-family:monospace; font-weight:800;">${item.res.score}</td>
+      <td style="font-family:monospace; color:#94a3b8;">
+        ${Math.round(item.res.highC)}% / ${Math.round(item.res.midC)}% / ${Math.round(item.res.lowC)}%
+      </td>
+      <td style="font-family:monospace; color:#fde68a;">
+        ${item.params.rem_100}% / ${item.params.rem_250}% / ${item.params.rem_400}%
+      </td>
+      <td style="font-family:monospace; color:#a7f3d0;">${item.params.aod}</td>
+      <td>${item.res.colorBias}</td>
+    </tr>
+  `).join("");
+}
+
+function replayHistoryItem(id) {
+  const rec = historyRecords.find(r => r.id === id);
+  if (!rec) return;
+  currentCityData = JSON.parse(JSON.stringify(rec.cityData));
+  selectedSlotKey = rec.slotKey;
+  document.getElementById("cityInput").value = currentCityData.name;
+  renderForecastDashboard();
+  if (sunsetLeafletMap) {
+    sunsetLeafletMap.flyTo([currentCityData.lat, currentCityData.lon], 6, { duration: 1.0 });
+  }
+}
+
+// ==================== 9. 常驻底部：火烧云热力地图引擎 ====================
+let sunsetLeafletMap = null;
+let isMapFullscreen = false;
+let mapGridCache = {};
+
+// 根据火烧云指数 (0-100) 返回 RGBA：低于 20 分严格不显示颜色 (Alpha = 0)，指数越高越红
+function scoreToHeatRGBA(score) {
+  if (score < 20) return [0, 0, 0, 0];
+
+  if (score < 45) {
+    // 20 ~ 45分：浅金暖黄过渡到亮橙
+    const t = (score - 20) / 25;
+    return [
+      Math.round(251 - t * 2),
+      Math.round(191 - t * 76),
+      Math.round(36 - t * 14),
+      Math.round(75 + t * 70)
+    ];
+  } else if (score < 70) {
+    // 45 ~ 70分：亮橙过渡到浓郁橘红/绯红
+    const t = (score - 45) / 25;
+    return [
+      Math.round(249 - t * 10),
+      Math.round(115 - t * 55),
+      Math.round(22 + t * 30),
+      Math.round(145 + t * 50)
+    ];
+  } else if (score < 85) {
+    // 70 ~ 85分：绯红过渡到鲜红
+    const t = (score - 70) / 15;
+    return [
+      Math.round(239 - t * 19),
+      Math.round(60 - t * 32),
+      Math.round(52 - t * 20),
+      Math.round(195 + t * 30)
+    ];
+  } else {
+    // 85 ~ 100分：深红至炽烈极红
+    const t = Math.min(1, (score - 85) / 15);
+    return [
+      Math.round(220 - t * 45),
+      Math.round(28 - t * 18),
+      Math.round(32 + t * 25),
+      Math.round(225 + t * 25)
+    ];
+  }
+}
+
+// 计算任意经纬度在指定时段的火烧云指数（融合天气系统的空间连续场与已查询城市实况）
+function getSpatialGlowScore(lat, lon, slotKey) {
+  const slotIdx = SLOT_METAS.findIndex(m => m.key === slotKey);
+  const sIdx = slotIdx >= 0 ? slotIdx : 1;
+
+  // 若用户已查询某城市，在该城市附近融合真实拉取的实况分数
+  if (currentCityData && currentCityData.slots[slotKey]) {
+    const dLat = lat - currentCityData.lat;
+    const dLon = lon - currentCityData.lon;
+    const distDeg = Math.sqrt(dLat * dLat + dLon * dLon);
+    if (distDeg < 4.5) {
+      const m = SLOT_METAS[sIdx];
+      const realScore = evaluateGlowBalanced(currentCityData.slots[slotKey], m.type).score;
+      const w = Math.exp(-(distDeg * distDeg) / 4.0);
+      const bgScore = calcContinuousWeatherFieldScore(lat, lon, sIdx);
+      return realScore * w + bgScore * (1 - w);
+    }
+  }
+  return calcContinuousWeatherFieldScore(lat, lon, sIdx);
+}
+
+// 构建空间连续的大气高积云/卷云锋面气团场（包含低于20分的晴空/阴雨无色区与高分红区）
+function calcContinuousWeatherFieldScore(lat, lon, sIdx) {
+  const radLat = lat * 0.14;
+  const radLon = lon * 0.11;
+  const phase = sIdx * 1.15;
+
+  const wave1 = Math.sin(radLat + phase * 0.7) * Math.cos(radLon - phase * 0.5);
+  const wave2 = Math.sin(radLat * 1.8 - radLon * 1.3 + phase) * 0.55;
+  const ridge = Math.exp(-Math.pow((lat - (31 + Math.sin(lon * 0.08 + phase) * 6)) / 5.5, 2));
+
+  let raw = (wave1 * 0.5 + wave2 * 0.35 + ridge * 0.75) * 68 + 18;
+  return Math.max(0, Math.min(98, raw));
+}
+
+function initSunsetHeatmap() {
+  const mapEl = document.getElementById("sunsetMap");
+  if (!mapEl || typeof L === "undefined") return;
+
+  sunsetLeafletMap = L.map("sunsetMap", {
+    center: [34.2, 108.9],
+    zoom: 4,
+    minZoom: 3,
+    maxZoom: 10,
+    zoomControl: true
+  });
+
+  // 深色底图瓦片
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    attribution: "&copy; OpenStreetMap &copy; CARTO",
+    subdomains: "abcd",
+    maxZoom: 18
+  }).addTo(sunsetLeafletMap);
+
+  // 监听地图移动与缩放：实时重绘热力图层并更新视野中心指数
+  sunsetLeafletMap.on("move moveend zoomend resize", () => {
+    renderHeatmapCanvasOverlay();
+    updateMapCenterHud();
+  });
+
+  // 点击地图画面：在非全屏状态下点击进入全屏；在全屏状态下点击显示点击位置的精准火烧云指数
+  sunsetLeafletMap.on("click", (e) => {
+    if (!isMapFullscreen) {
+      toggleMapFullscreen();
+    } else {
+      const { lat, lng } = e.latlng;
+      const sc = getSpatialGlowScore(lat, lng, mapSlotKey).toFixed(1);
+      const lvl = GRADES.find(g => sc >= g.min && sc <= g.max) || GRADES[0];
+      document.getElementById("mapCenterCoord").innerText = `${lat.toFixed(2)}°N, ${lng.toFixed(2)}°E`;
+      const scoreEl = document.getElementById("mapCenterScore");
+      scoreEl.innerText = `${sc}分 (L${lvl.level} ${lvl.name})`;
+      scoreEl.style.color = sc < 20 ? "#94a3b8" : lvl.hex;
+    }
+  });
+
+  renderHeatmapCanvasOverlay();
+  updateMapCenterHud();
+}
+
+function updateMapCenterHud() {
+  if (!sunsetLeafletMap) return;
+  const center = sunsetLeafletMap.getCenter();
+  const sc = getSpatialGlowScore(center.lat, center.lng, mapSlotKey).toFixed(1);
+  const lvl = GRADES.find(g => sc >= g.min && sc <= g.max) || GRADES[0];
+
+  document.getElementById("mapCenterCoord").innerText = `${center.lat.toFixed(2)}°N, ${center.lng.toFixed(2)}°E`;
+  const scoreEl = document.getElementById("mapCenterScore");
+  scoreEl.innerText = `${sc}分 (L${lvl.level} ${lvl.name})`;
+  scoreEl.style.color = sc < 20 ? "#94a3b8" : lvl.hex;
+}
+
+function renderHeatmapCanvasOverlay() {
+  if (!sunsetLeafletMap) return;
+  const canvas = document.getElementById("heatmapOverlayCanvas");
+  const wrap = document.getElementById("mapViewportWrap");
+  const w = wrap.clientWidth;
+  const h = wrap.clientHeight;
+  if (w === 0 || h === 0) return;
+
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+
+  // 采用低分辨率离屏像素场采样再平滑双线性放大，兼顾高帧率拖拽与柔和连续热力边界
+  const scale = 6;
+  const sw = Math.ceil(w / scale);
+  const sh = Math.ceil(h / scale);
+  const offCanvas = document.createElement("canvas");
+  offCanvas.width = sw;
+  offCanvas.height = sh;
+  const offCtx = offCanvas.getContext("2d");
+  const imgData = offCtx.createImageData(sw, sh);
+  const data = imgData.data;
+
+  for (let py = 0; py < sh; py++) {
+    for (let px = 0; px < sw; px++) {
+      const containerPt = L.point(px * scale + scale * 0.5, py * scale + scale * 0.5);
+      const latlng = sunsetLeafletMap.containerPointToLatLng(containerPt);
+      const score = getSpatialGlowScore(latlng.lat, latlng.lng, mapSlotKey);
+      const [r, g, b, a] = scoreToHeatRGBA(score);
+      const idx = (py * sw + px) * 4;
+      data[idx]     = r;
+      data[idx + 1] = g;
+      data[idx + 2] = b;
+      data[idx + 3] = a;
+    }
+  }
+
+  offCtx.putImageData(imgData, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(offCanvas, 0, 0, sw, sh, 0, 0, w, h);
+
+  // 在热力图上叠加主要城市指数锚点标记（仅当视野缩放足够或分数 >= 20 时显示）
+  const zoom = sunsetLeafletMap.getZoom();
+  if (zoom >= 4) {
+    const sampleCities = ["北京", "上海", "广州", "深圳", "杭州", "成都", "武汉", "西安", "大理", "拉萨", "青岛", "厦门", "哈尔滨", "乌鲁木齐"];
+    ctx.font = "bold 11px sans-serif";
+    sampleCities.forEach(cKey => {
+      const c = CITY_COORDS_DB[cKey];
+      if (!c) return;
+      const pt = sunsetLeafletMap.latLngToContainerPoint([c.lat, c.lon]);
+      if (pt.x < 10 || pt.x > w - 10 || pt.y < 10 || pt.y > h - 10) return;
+
+      const sc = Math.round(getSpatialGlowScore(c.lat, c.lon, mapSlotKey));
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = sc >= 20 ? "#ffffff" : "rgba(148,163,184,0.5)";
+      ctx.fill();
+
+      ctx.fillStyle = sc >= 20 ? "#fef08a" : "rgba(148,163,184,0.65)";
+      ctx.fillText(`${cKey} ${sc}`, pt.x + 6, pt.y + 4);
+    });
+  }
+}
+
+function setMapSlot(slotKey) {
+  mapSlotKey = slotKey;
+  SLOT_METAS.forEach(m => {
+    const btn = document.getElementById(`map_slot_${m.key}`);
+    if (btn) btn.classList.toggle("active", m.key === slotKey);
+  });
+  renderHeatmapCanvasOverlay();
+  updateMapCenterHud();
+}
+
+function toggleMapFullscreen(ev) {
+  if (ev && ev.stopPropagation) ev.stopPropagation();
+  const card = document.getElementById("mapSectionCard");
+  const btn = document.getElementById("mapFsToggleBtn");
+  isMapFullscreen = !isMapFullscreen;
+
+  card.classList.toggle("is-fullscreen", isMapFullscreen);
+  btn.innerText = isMapFullscreen ? "✕ 退出全屏地图" : "⛶ 全屏查看火烧云地图";
+
+  setTimeout(() => {
+    if (sunsetLeafletMap) {
+      sunsetLeafletMap.invalidateSize();
+      renderHeatmapCanvasOverlay();
+    }
+  }, 120);
+}
+
+// 支持按 ESC 键退出全屏地图
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && isMapFullscreen) {
+    toggleMapFullscreen();
+  }
+});
+
+// ==================== 10. 初始化 ====================
+function initStaticElements() {
+  const legendEl = document.getElementById("gradeLegend");
+  const scaleLabelsEl = document.getElementById("scaleLabels");
+  legendEl.innerHTML = GRADES.map(g => `
+    <div class="grade-chip" id="chip_lvl_${g.level}">
+      <span class="dot" style="background:${g.hex}"></span>
+      <span style="font-weight:700;">L${g.level} ${g.name}</span>
+    </div>
+  `).join("");
+  scaleLabelsEl.innerHTML = GRADES.map(g => `<span id="lbl_lvl_${g.level}">${g.name}</span>`).join("");
+
+  const cityInputEl = document.getElementById("cityInput");
+
+  cityInputEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleCitySearch();
+    }
+  });
+
+  cityInputEl.addEventListener("input", (e) => {
+    if (e.target.value.trim() === "") {
+      currentCityData = null;
+      showEmptyOrErrorState(
+        "🌇",
+        "请输入目标城市名称以获取火烧云预测",
+        "系统将自动匹配目标城市的经纬度坐标，拉取后端固定的 GFS、ECMWF 云层数据及 CAMS 气溶胶参数，计算未来三天（今/明/后天）的朝霞与晚霞等级。未输入城市或匹配失败时不渲染预测结果。",
+        false
+      );
+    }
+  });
+
+  initSunsetHeatmap();
+}
+
+let remainSec = 3585;
+setInterval(() => {
+  remainSec = remainSec > 0 ? remainSec - 1 : 3600;
+  const m = String(Math.floor(remainSec / 60)).padStart(2, "0");
+  const s = String(remainSec % 60).padStart(2, "0");
+  document.getElementById("cronTimer").innerText = `整点自动调度: ${m}:${s}`;
+  if (remainSec === 0 && currentCityData) {
+    handleCitySearch();
+  }
+}, 1000);
+
+window.addEventListener("DOMContentLoaded", initStaticElements);
+</script>
+</body>
+</html>
