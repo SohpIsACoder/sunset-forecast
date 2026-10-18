@@ -1,0 +1,1521 @@
+/*!
+ * 火烧云预报系统 · 前端业务脚本
+ * Copyright (c) 2026 Sohp. All rights reserved.
+ *
+ * 本文件为著作权作品，受法律保护；未经书面许可，禁止复制、传播或二次分发。
+ */
+
+/* 主题预置：在首次绘制前定好 data-theme，避免浅/深色切换闪烁 */
+    (function () {
+      var mode = "system";
+      try { mode = localStorage.getItem("sunset-theme") || "system"; } catch (e) {}
+      var dark = false;
+      try {
+        if (window.AndroidTheme && typeof AndroidTheme.isDark === "function") dark = !!AndroidTheme.isDark();
+        else dark = !!(window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+      } catch (e) { dark = false; }
+      var resolved = mode === "dark" || (mode === "system" && dark);
+      document.documentElement.setAttribute("data-theme", resolved ? "dark" : "light");
+    })();
+
+// ==================== 1. 8级火烧云分级定义 ====================
+const GRADES = [
+  { level: 1, name: "不烧", min: 0, max: 14.9, hex: "#64748B", skyTop: "#0f172a", skyHorizon: "#334155" },
+  { level: 2, name: "微烧", min: 15, max: 29.9, hex: "#C28B28", skyTop: "#1e293b", skyHorizon: "#b45309" },
+  { level: 3, name: "小烧", min: 30, max: 44.9, hex: "#C8701A", skyTop: "#1e1b4b", skyHorizon: "#d97706" },
+  { level: 4, name: "小到中烧", min: 45, max: 57.9, hex: "#C85A1E", skyTop: "#1e1b4b", skyHorizon: "#ea580c" },
+  { level: 5, name: "中烧", min: 58, max: 69.9, hex: "#B84314", skyTop: "#2e1065", skyHorizon: "#ea580c" },
+  { level: 6, name: "中到大烧", min: 70, max: 81.9, hex: "#A82424", skyTop: "#3b0764", skyHorizon: "#dc2626" },
+  { level: 7, name: "大烧", min: 82, max: 91.9, hex: "#9E1C3E", skyTop: "#4a044e", skyHorizon: "#e11d48" },
+  { level: 8, name: "世纪大烧", min: 92, max: 100.0, hex: "#6B2896", skyTop: "#2e1065", skyHorizon: "#ec4899" }
+];
+
+// ==================== 2. 内置中国及全球所有主要城市地理坐标字典 ====================
+const CITY_COORDS_DB = {
+  // --- 中国主要城市 ---
+  "上海": { name: "中国·上海市", en: "Shanghai", region: "中国", lat: 31.2304, lon: 121.4737, tz: 8 },
+  "北京": { name: "中国·北京市", en: "Beijing", region: "中国", lat: 39.9042, lon: 116.4074, tz: 8 },
+  "广州": { name: "中国·广州市", en: "Guangzhou", region: "中国", lat: 23.1291, lon: 113.2644, tz: 8 },
+  "深圳": { name: "中国·深圳市", en: "Shenzhen", region: "中国", lat: 22.5431, lon: 114.0579, tz: 8 },
+  "杭州": { name: "中国·杭州市", en: "Hangzhou", region: "中国", lat: 30.2741, lon: 120.1551, tz: 8 },
+  "南京": { name: "中国·南京市", en: "Nanjing", region: "中国", lat: 32.0603, lon: 118.7969, tz: 8 },
+  "苏州": { name: "中国·苏州市", en: "Suzhou", region: "中国", lat: 31.2989, lon: 120.5853, tz: 8 },
+  "无锡": { name: "中国·无锡市", en: "Wuxi", region: "中国", lat: 31.4912, lon: 120.3119, tz: 8 },
+  "常州": { name: "中国·常州市", en: "Changzhou", region: "中国", lat: 31.8112, lon: 119.9741, tz: 8 },
+  "南通": { name: "中国·南通市", en: "Nantong", region: "中国", lat: 31.9802, lon: 120.8943, tz: 8 },
+  "扬州": { name: "中国·扬州市", en: "Yangzhou", region: "中国", lat: 32.3942, lon: 119.4129, tz: 8 },
+  "徐州": { name: "中国·徐州市", en: "Xuzhou", region: "中国", lat: 34.2044, lon: 117.2858, tz: 8 },
+  "宁波": { name: "中国·宁波市", en: "Ningbo", region: "中国", lat: 29.8683, lon: 121.5440, tz: 8 },
+  "温州": { name: "中国·温州市", en: "Wenzhou", region: "中国", lat: 27.9943, lon: 120.6994, tz: 8 },
+  "嘉兴": { name: "中国·嘉兴市", en: "Jiaxing", region: "中国", lat: 30.7468, lon: 120.7555, tz: 8 },
+  "湖州": { name: "中国·湖州市", en: "Huzhou", region: "中国", lat: 30.8943, lon: 120.0868, tz: 8 },
+  "绍兴": { name: "中国·绍兴市", en: "Shaoxing", region: "中国", lat: 30.0303, lon: 120.5802, tz: 8 },
+  "金华": { name: "中国·金华市", en: "Jinhua", region: "中国", lat: 29.0792, lon: 119.6474, tz: 8 },
+  "台州": { name: "中国·台州市", en: "Taizhou", region: "中国", lat: 28.6564, lon: 121.4208, tz: 8 },
+  "舟山": { name: "中国·舟山市", en: "Zhoushan", region: "中国", lat: 29.9853, lon: 122.2072, tz: 8 },
+  "合肥": { name: "中国·合肥市", en: "Hefei", region: "中国", lat: 31.8206, lon: 117.2272, tz: 8 },
+  "芜湖": { name: "中国·芜湖市", en: "Wuhu", region: "中国", lat: 31.3529, lon: 118.4331, tz: 8 },
+  "黄山": { name: "中国·黄山市", en: "Huangshan", region: "中国", lat: 29.7147, lon: 118.3375, tz: 8 },
+  "成都": { name: "中国·成都市", en: "Chengdu", region: "中国", lat: 30.5728, lon: 104.0668, tz: 8 },
+  "重庆": { name: "中国·重庆市", en: "Chongqing", region: "中国", lat: 29.5630, lon: 106.5516, tz: 8 },
+  "绵阳": { name: "中国·绵阳市", en: "Mianyang", region: "中国", lat: 31.4675, lon: 104.6791, tz: 8 },
+  "甘孜": { name: "中国·甘孜藏族自治州", en: "Garze", region: "中国", lat: 30.0495, lon: 101.9623, tz: 8 },
+  "阿坝": { name: "中国·阿坝藏族羌族自治州", en: "Ngawa", region: "中国", lat: 31.8994, lon: 102.2246, tz: 8 },
+  "武汉": { name: "中国·武汉市", en: "Wuhan", region: "中国", lat: 30.5928, lon: 114.3055, tz: 8 },
+  "宜昌": { name: "中国·宜昌市", en: "Yichang", region: "中国", lat: 30.6920, lon: 111.2865, tz: 8 },
+  "襄阳": { name: "中国·襄阳市", en: "Xiangyang", region: "中国", lat: 32.0090, lon: 112.1224, tz: 8 },
+  "长沙": { name: "中国·长沙市", en: "Changsha", region: "中国", lat: 28.2282, lon: 112.9388, tz: 8 },
+  "张家界": { name: "中国·张家界市", en: "Zhangjiajie", region: "中国", lat: 29.1171, lon: 110.4792, tz: 8 },
+  "西安": { name: "中国·西安市", en: "Xi'an", region: "中国", lat: 34.3416, lon: 108.9398, tz: 8 },
+  "青岛": { name: "中国·青岛市", en: "Qingdao", region: "中国", lat: 36.0671, lon: 120.3826, tz: 8 },
+  "济南": { name: "中国·济南市", en: "Jinan", region: "中国", lat: 36.6512, lon: 117.1201, tz: 8 },
+  "烟台": { name: "中国·烟台市", en: "Yantai", region: "中国", lat: 37.4638, lon: 121.4479, tz: 8 },
+  "威海": { name: "中国·威海市", en: "Weihai", region: "中国", lat: 37.5131, lon: 122.1204, tz: 8 },
+  "厦门": { name: "中国·厦门市", en: "Xiamen", region: "中国", lat: 24.4798, lon: 118.0894, tz: 8 },
+  "福州": { name: "中国·福州市", en: "Fuzhou", region: "中国", lat: 26.0745, lon: 119.2965, tz: 8 },
+  "泉州": { name: "中国·泉州市", en: "Quanzhou", region: "中国", lat: 24.8741, lon: 118.6757, tz: 8 },
+  "大理": { name: "中国·大理白族自治州", en: "Dali", region: "中国", lat: 25.6065, lon: 100.2676, tz: 8 },
+  "昆明": { name: "中国·昆明市", en: "Kunming", region: "中国", lat: 25.0389, lon: 102.7183, tz: 8 },
+  "丽江": { name: "中国·丽江市", en: "Lijiang", region: "中国", lat: 26.8721, lon: 100.2299, tz: 8 },
+  "香格里拉": { name: "中国·香格里拉市", en: "Shangri-La", region: "中国", lat: 27.8269, lon: 99.7060, tz: 8 },
+  "西双版纳": { name: "中国·西双版纳傣族自治州", en: "Xishuangbanna", region: "中国", lat: 22.0088, lon: 100.7972, tz: 8 },
+  "拉萨": { name: "中国·拉萨市", en: "Lhasa", region: "中国", lat: 29.6525, lon: 91.1721, tz: 8 },
+  "林芝": { name: "中国·林芝市", en: "Nyingchi", region: "中国", lat: 29.6491, lon: 94.3615, tz: 8 },
+  "日喀则": { name: "中国·日喀则市", en: "Shigatse", region: "中国", lat: 29.2669, lon: 88.8806, tz: 8 },
+  "三亚": { name: "中国·三亚市", en: "Sanya", region: "中国", lat: 18.2528, lon: 109.5120, tz: 8 },
+  "海口": { name: "中国·海口市", en: "Haikou", region: "中国", lat: 20.0440, lon: 110.1999, tz: 8 },
+  "桂林": { name: "中国·桂林市", en: "Guilin", region: "中国", lat: 25.2736, lon: 110.2900, tz: 8 },
+  "南宁": { name: "中国·南宁市", en: "Nanning", region: "中国", lat: 22.8170, lon: 108.3665, tz: 8 },
+  "北海": { name: "中国·北海市", en: "Beihai", region: "中国", lat: 21.4812, lon: 109.1199, tz: 8 },
+  "贵阳": { name: "中国·贵阳市", en: "Guiyang", region: "中国", lat: 26.6470, lon: 106.6302, tz: 8 },
+  "南昌": { name: "中国·南昌市", en: "Nanchang", region: "中国", lat: 28.6820, lon: 115.8579, tz: 8 },
+  "九江": { name: "中国·九江市", en: "Jiujiang", region: "中国", lat: 29.7051, lon: 116.0019, tz: 8 },
+  "郑州": { name: "中国·郑州市", en: "Zhengzhou", region: "中国", lat: 34.7466, lon: 113.6253, tz: 8 },
+  "洛阳": { name: "中国·洛阳市", en: "Luoyang", region: "中国", lat: 34.6197, lon: 112.4540, tz: 8 },
+  "太原": { name: "中国·太原市", en: "Taiyuan", region: "中国", lat: 37.8706, lon: 112.5489, tz: 8 },
+  "大同": { name: "中国·大同市", en: "Datong", region: "中国", lat: 40.0768, lon: 113.3001, tz: 8 },
+  "石家庄": { name: "中国·石家庄市", en: "Shijiazhuang", region: "中国", lat: 38.0428, lon: 114.5149, tz: 8 },
+  "秦皇岛": { name: "中国·秦皇岛市", en: "Qinhuangdao", region: "中国", lat: 39.9354, lon: 119.6005, tz: 8 },
+  "天津": { name: "中国·天津市", en: "Tianjin", region: "中国", lat: 39.3434, lon: 117.3616, tz: 8 },
+  "沈阳": { name: "中国·沈阳市", en: "Shenyang", region: "中国", lat: 41.8057, lon: 123.4315, tz: 8 },
+  "大连": { name: "中国·大连市", en: "Dalian", region: "中国", lat: 38.9140, lon: 121.6147, tz: 8 },
+  "长春": { name: "中国·长春市", en: "Changchun", region: "中国", lat: 43.8171, lon: 125.3235, tz: 8 },
+  "哈尔滨": { name: "中国·哈尔滨市", en: "Harbin", region: "中国", lat: 45.8038, lon: 126.5350, tz: 8 },
+  "呼和浩特": { name: "中国·呼和浩特市", en: "Hohhot", region: "中国", lat: 40.8426, lon: 111.7492, tz: 8 },
+  "银川": { name: "中国·银川市", en: "Yinchuan", region: "中国", lat: 38.4872, lon: 106.2309, tz: 8 },
+  "兰州": { name: "中国·兰州市", en: "Lanzhou", region: "中国", lat: 36.0611, lon: 103.8343, tz: 8 },
+  "敦煌": { name: "中国·敦煌市", en: "Dunhuang", region: "中国", lat: 40.1421, lon: 94.6620, tz: 8 },
+  "西宁": { name: "中国·西宁市", en: "Xining", region: "中国", lat: 36.6171, lon: 101.7782, tz: 8 },
+  "乌鲁木齐": { name: "中国·乌鲁木齐市", en: "Urumqi", region: "中国", lat: 43.8256, lon: 87.6168, tz: 8 },
+  "喀什": { name: "中国·喀什地区", en: "Kashgar", region: "中国", lat: 39.4704, lon: 75.9898, tz: 8 },
+  "伊犁": { name: "中国·伊犁哈萨克自治州", en: "Ili", region: "中国", lat: 43.9169, lon: 81.3246, tz: 8 },
+  "阿勒泰": { name: "中国·阿勒泰地区", en: "Altay", region: "中国", lat: 47.8449, lon: 88.1403, tz: 8 },
+  "香港": { name: "中国·香港特别行政区", en: "Hong Kong", region: "中国", lat: 22.3193, lon: 114.1694, tz: 8 },
+  "澳门": { name: "中国·澳门特别行政区", en: "Macau", region: "中国", lat: 22.1987, lon: 113.5439, tz: 8 },
+  "台北": { name: "中国·台北市", en: "Taipei", region: "中国", lat: 25.0330, lon: 121.5654, tz: 8 },
+  "高雄": { name: "中国·高雄市", en: "Kaohsiung", region: "中国", lat: 22.6273, lon: 120.3014, tz: 8 },
+  "珠海": { name: "中国·珠海市", en: "Zhuhai", region: "中国", lat: 22.2710, lon: 113.5767, tz: 8 },
+  "佛山": { name: "中国·佛山市", en: "Foshan", region: "中国", lat: 23.0215, lon: 113.1214, tz: 8 },
+  "东莞": { name: "中国·东莞市", en: "Dongguan", region: "中国", lat: 23.0207, lon: 113.7518, tz: 8 },
+  "惠州": { name: "中国·惠州市", en: "Huizhou", region: "中国", lat: 23.1115, lon: 114.4162, tz: 8 },
+  "汕头": { name: "中国·汕头市", en: "Shantou", region: "中国", lat: 23.3541, lon: 116.6820, tz: 8 },
+
+  // --- 国外主要城市：亚洲与中东 ---
+  "东京": { name: "日本·东京 (Tokyo)", en: "Tokyo", region: "亚洲", lat: 35.6762, lon: 139.6503, tz: 9 },
+  "大阪": { name: "日本·大阪 (Osaka)", en: "Osaka", region: "亚洲", lat: 34.6937, lon: 135.5023, tz: 9 },
+  "京都": { name: "日本·京都 (Kyoto)", en: "Kyoto", region: "亚洲", lat: 35.0116, lon: 135.7681, tz: 9 },
+  "横滨": { name: "日本·横滨 (Yokohama)", en: "Yokohama", region: "亚洲", lat: 35.4437, lon: 139.6380, tz: 9 },
+  "名古屋": { name: "日本·名古屋 (Nagoya)", en: "Nagoya", region: "亚洲", lat: 35.1815, lon: 136.9066, tz: 9 },
+  "札幌": { name: "日本·札幌 (Sapporo)", en: "Sapporo", region: "亚洲", lat: 43.0618, lon: 141.3545, tz: 9 },
+  "福冈": { name: "日本·福冈 (Fukuoka)", en: "Fukuoka", region: "亚洲", lat: 33.5902, lon: 130.4017, tz: 9 },
+  "冲绳": { name: "日本·冲绳那霸 (Okinawa)", en: "Okinawa", region: "亚洲", lat: 26.2124, lon: 127.6809, tz: 9 },
+  "富士山": { name: "日本·河口湖/富士山 (Mt. Fuji)", en: "Fuji", region: "亚洲", lat: 35.4982, lon: 138.7686, tz: 9 },
+  "首尔": { name: "韩国·首尔 (Seoul)", en: "Seoul", region: "亚洲", lat: 37.5665, lon: 126.9780, tz: 9 },
+  "釜山": { name: "韩国·釜山 (Busan)", en: "Busan", region: "亚洲", lat: 35.1796, lon: 129.0756, tz: 9 },
+  "济州岛": { name: "韩国·济州岛 (Jeju)", en: "Jeju", region: "亚洲", lat: 33.4996, lon: 126.5312, tz: 9 },
+  "仁川": { name: "韩国·仁川 (Incheon)", en: "Incheon", region: "亚洲", lat: 37.4563, lon: 126.7052, tz: 9 },
+  "新加坡": { name: "新加坡 (Singapore)", en: "Singapore", region: "亚洲", lat: 1.3521, lon: 103.8198, tz: 8 },
+  "曼谷": { name: "泰国·曼谷 (Bangkok)", en: "Bangkok", region: "亚洲", lat: 13.7563, lon: 100.5018, tz: 7 },
+  "清迈": { name: "泰国·清迈 (Chiang Mai)", en: "Chiang Mai", region: "亚洲", lat: 18.7883, lon: 98.9853, tz: 7 },
+  "普吉岛": { name: "泰国·普吉岛 (Phuket)", en: "Phuket", region: "亚洲", lat: 7.8804, lon: 98.3923, tz: 7 },
+  "吉隆坡": { name: "马来西亚·吉隆坡 (Kuala Lumpur)", en: "Kuala Lumpur", region: "亚洲", lat: 3.1390, lon: 101.6869, tz: 8 },
+  "槟城": { name: "马来西亚·槟城 (Penang)", en: "Penang", region: "亚洲", lat: 5.4141, lon: 100.3288, tz: 8 },
+  "亚庇": { name: "马来西亚·沙巴亚庇 (Kota Kinabalu)", en: "Kota Kinabalu", region: "亚洲", lat: 5.9804, lon: 116.0735, tz: 8 },
+  "雅加达": { name: "印度尼西亚·雅加达 (Jakarta)", en: "Jakarta", region: "亚洲", lat: -6.2088, lon: 106.8456, tz: 7 },
+  "巴厘岛": { name: "印度尼西亚·巴厘岛 (Bali)", en: "Bali", region: "亚洲", lat: -8.4095, lon: 115.1889, tz: 8 },
+  "马尼拉": { name: "菲律宾·马尼拉 (Manila)", en: "Manila", region: "亚洲", lat: 14.5995, lon: 120.9842, tz: 8 },
+  "长滩岛": { name: "菲律宾·长滩岛 (Boracay)", en: "Boracay", region: "亚洲", lat: 11.9674, lon: 121.9248, tz: 8 },
+  "河内": { name: "越南·河内 (Hanoi)", en: "Hanoi", region: "亚洲", lat: 21.0285, lon: 105.8542, tz: 7 },
+  "胡志明市": { name: "越南·胡志明市 (Ho Chi Minh City)", en: "Ho Chi Minh City", region: "亚洲", lat: 10.8231, lon: 106.6297, tz: 7 },
+  "岘港": { name: "越南·岘港 (Da Nang)", en: "Da Nang", region: "亚洲", lat: 16.0544, lon: 108.2022, tz: 7 },
+  "金边": { name: "柬埔寨·金边 (Phnom Penh)", en: "Phnom Penh", region: "亚洲", lat: 11.5564, lon: 104.9282, tz: 7 },
+  "暹粒": { name: "柬埔寨·暹粒吴哥 (Siem Reap)", en: "Siem Reap", region: "亚洲", lat: 13.3633, lon: 103.8564, tz: 7 },
+  "万象": { name: "老挝·万象 (Vientiane)", en: "Vientiane", region: "亚洲", lat: 17.9757, lon: 102.6331, tz: 7 },
+  "仰光": { name: "缅甸·仰光 (Yangon)", en: "Yangon", region: "亚洲", lat: 16.8409, lon: 96.1735, tz: 6.5 },
+  "加德满都": { name: "尼泊尔·加德满都 (Kathmandu)", en: "Kathmandu", region: "亚洲", lat: 27.7172, lon: 85.3240, tz: 5.75 },
+  "新德里": { name: "印度·新德里 (New Delhi)", en: "New Delhi", region: "亚洲", lat: 28.6139, lon: 77.2090, tz: 5.5 },
+  "孟买": { name: "印度·孟买 (Mumbai)", en: "Mumbai", region: "亚洲", lat: 19.0760, lon: 72.8777, tz: 5.5 },
+  "班加罗尔": { name: "印度·班加罗尔 (Bangalore)", en: "Bangalore", region: "亚洲", lat: 12.9716, lon: 77.5946, tz: 5.5 },
+  "科伦坡": { name: "斯里兰卡·科伦坡 (Colombo)", en: "Colombo", region: "亚洲", lat: 6.9271, lon: 79.8612, tz: 5.5 },
+  "马累": { name: "马尔代夫·马累 (Male)", en: "Male", region: "亚洲", lat: 4.1755, lon: 73.5093, tz: 5 },
+  "伊斯兰堡": { name: "巴基斯坦·伊斯兰堡 (Islamabad)", en: "Islamabad", region: "亚洲", lat: 33.6844, lon: 73.0479, tz: 5 },
+  "乌兰巴托": { name: "蒙古·乌兰巴托 (Ulaanbaatar)", en: "Ulaanbaatar", region: "亚洲", lat: 47.8864, lon: 106.9057, tz: 8 },
+  "阿拉木图": { name: "哈萨克斯坦·阿拉木图 (Almaty)", en: "Almaty", region: "亚洲", lat: 43.2220, lon: 76.8512, tz: 5 },
+  "塔什干": { name: "乌兹别克斯坦·塔什干 (Tashkent)", en: "Tashkent", region: "亚洲", lat: 41.2995, lon: 69.2401, tz: 5 },
+  "迪拜": { name: "阿联酋·迪拜 (Dubai)", en: "Dubai", region: "亚洲", lat: 25.2048, lon: 55.2708, tz: 4 },
+  "阿布扎比": { name: "阿联酋·阿布扎比 (Abu Dhabi)", en: "Abu Dhabi", region: "亚洲", lat: 24.4539, lon: 54.3773, tz: 4 },
+  "多哈": { name: "卡塔尔·多哈 (Doha)", en: "Doha", region: "亚洲", lat: 25.2854, lon: 51.5310, tz: 3 },
+  "利雅得": { name: "沙特阿拉伯·利雅得 (Riyadh)", en: "Riyadh", region: "亚洲", lat: 24.7136, lon: 46.6753, tz: 3 },
+  "德黑兰": { name: "伊朗·德黑兰 (Tehran)", en: "Tehran", region: "亚洲", lat: 35.6892, lon: 51.3890, tz: 3.5 },
+  "耶路撒冷": { name: "耶路撒冷 (Jerusalem)", en: "Jerusalem", region: "亚洲", lat: 31.7683, lon: 35.2137, tz: 2 },
+  "特拉维夫": { name: "以色列·特拉维夫 (Tel Aviv)", en: "Tel Aviv", region: "亚洲", lat: 32.0853, lon: 34.7818, tz: 2 },
+  "伊斯坦布尔": { name: "土耳其·伊斯坦布尔 (Istanbul)", en: "Istanbul", region: "亚洲", lat: 41.0082, lon: 28.9784, tz: 3 },
+  "安卡拉": { name: "土耳其·安卡拉 (Ankara)", en: "Ankara", region: "亚洲", lat: 39.9334, lon: 32.8597, tz: 3 },
+  "卡帕多奇亚": { name: "土耳其·卡帕多奇亚 (Cappadocia)", en: "Cappadocia", region: "亚洲", lat: 38.6431, lon: 34.8289, tz: 3 },
+
+  // --- 国外主要城市：欧洲 ---
+  "伦敦": { name: "英国·伦敦 (London)", en: "London", region: "欧洲", lat: 51.5074, lon: -0.1278, tz: 0 },
+  "爱丁堡": { name: "英国·爱丁堡 (Edinburgh)", en: "Edinburgh", region: "欧洲", lat: 55.9533, lon: -3.1883, tz: 0 },
+  "曼彻斯特": { name: "英国·曼彻斯特 (Manchester)", en: "Manchester", region: "欧洲", lat: 53.4808, lon: -2.2426, tz: 0 },
+  "剑桥": { name: "英国·剑桥 (Cambridge)", en: "Cambridge", region: "欧洲", lat: 52.2053, lon: 0.1218, tz: 0 },
+  "牛津": { name: "英国·牛津 (Oxford)", en: "Oxford", region: "欧洲", lat: 51.7520, lon: -1.2577, tz: 0 },
+  "都柏林": { name: "爱尔兰·都柏林 (Dublin)", en: "Dublin", region: "欧洲", lat: 53.3498, lon: -6.2603, tz: 0 },
+  "巴黎": { name: "法国·巴黎 (Paris)", en: "Paris", region: "欧洲", lat: 48.8566, lon: 2.3522, tz: 1 },
+  "尼斯": { name: "法国·尼斯 (Nice)", en: "Nice", region: "欧洲", lat: 43.7102, lon: 7.2620, tz: 1 },
+  "里昂": { name: "法国·里昂 (Lyon)", en: "Lyon", region: "欧洲", lat: 45.7640, lon: 4.8357, tz: 1 },
+  "马赛": { name: "法国·马赛 (Marseille)", en: "Marseille", region: "欧洲", lat: 43.2965, lon: 5.3698, tz: 1 },
+  "柏林": { name: "德国·柏林 (Berlin)", en: "Berlin", region: "欧洲", lat: 52.5200, lon: 13.4050, tz: 1 },
+  "慕尼黑": { name: "德国·慕尼黑 (Munich)", en: "Munich", region: "欧洲", lat: 48.1351, lon: 11.5820, tz: 1 },
+  "法兰克福": { name: "德国·法兰克福 (Frankfurt)", en: "Frankfurt", region: "欧洲", lat: 50.1109, lon: 8.6821, tz: 1 },
+  "汉堡": { name: "德国·汉堡 (Hamburg)", en: "Hamburg", region: "欧洲", lat: 53.5511, lon: 9.9937, tz: 1 },
+  "科隆": { name: "德国·科隆 (Cologne)", en: "Cologne", region: "欧洲", lat: 50.9375, lon: 6.9603, tz: 1 },
+  "罗马": { name: "意大利·罗马 (Rome)", en: "Rome", region: "欧洲", lat: 41.9028, lon: 12.4964, tz: 1 },
+  "米兰": { name: "意大利·米兰 (Milan)", en: "Milan", region: "欧洲", lat: 45.4642, lon: 9.1900, tz: 1 },
+  "威尼斯": { name: "意大利·威尼斯 (Venice)", en: "Venice", region: "欧洲", lat: 45.4408, lon: 12.3155, tz: 1 },
+  "佛罗伦萨": { name: "意大利·佛罗伦萨 (Florence)", en: "Florence", region: "欧洲", lat: 43.7696, lon: 11.2558, tz: 1 },
+  "那不勒斯": { name: "意大利·那不勒斯 (Naples)", en: "Naples", region: "欧洲", lat: 40.8518, lon: 14.2681, tz: 1 },
+  "马德里": { name: "西班牙·马德里 (Madrid)", en: "Madrid", region: "欧洲", lat: 40.4168, lon: -3.7038, tz: 1 },
+  "巴塞罗那": { name: "西班牙·巴塞罗那 (Barcelona)", en: "Barcelona", region: "欧洲", lat: 41.3851, lon: 2.1734, tz: 1 },
+  "塞维利亚": { name: "西班牙·塞维利亚 (Seville)", en: "Seville", region: "欧洲", lat: 37.3891, lon: -5.9845, tz: 1 },
+  "里斯本": { name: "葡萄牙·里斯本 (Lisbon)", en: "Lisbon", region: "欧洲", lat: 38.7223, lon: -9.1393, tz: 0 },
+  "波尔图": { name: "葡萄牙·波尔图 (Porto)", en: "Porto", region: "欧洲", lat: 41.1579, lon: -8.6291, tz: 0 },
+  "阿姆斯特丹": { name: "荷兰·阿姆斯特丹 (Amsterdam)", en: "Amsterdam", region: "欧洲", lat: 52.3676, lon: 4.9041, tz: 1 },
+  "鹿特丹": { name: "荷兰·鹿特丹 (Rotterdam)", en: "Rotterdam", region: "欧洲", lat: 51.9244, lon: 4.4777, tz: 1 },
+  "布鲁塞尔": { name: "比利时·布鲁塞尔 (Brussels)", en: "Brussels", region: "欧洲", lat: 50.8503, lon: 4.3517, tz: 1 },
+  "苏黎世": { name: "瑞士·苏黎世 (Zurich)", en: "Zurich", region: "欧洲", lat: 47.3769, lon: 8.5417, tz: 1 },
+  "日内瓦": { name: "瑞士·日内瓦 (Geneva)", en: "Geneva", region: "欧洲", lat: 46.2044, lon: 6.1432, tz: 1 },
+  "因特拉肯": { name: "瑞士·因特拉肯 (Interlaken)", en: "Interlaken", region: "欧洲", lat: 46.6863, lon: 7.8632, tz: 1 },
+  "维也纳": { name: "奥地利·维也纳 (Vienna)", en: "Vienna", region: "欧洲", lat: 48.2082, lon: 16.3738, tz: 1 },
+  "萨尔茨堡": { name: "奥地利·萨尔茨堡 (Salzburg)", en: "Salzburg", region: "欧洲", lat: 47.8095, lon: 13.0550, tz: 1 },
+  "布拉格": { name: "捷克·布拉格 (Prague)", en: "Prague", region: "欧洲", lat: 50.0755, lon: 14.4378, tz: 1 },
+  "布达佩斯": { name: "匈牙利·布达佩斯 (Budapest)", en: "Budapest", region: "欧洲", lat: 47.4979, lon: 19.0402, tz: 1 },
+  "华沙": { name: "波兰·华沙 (Warsaw)", en: "Warsaw", region: "欧洲", lat: 52.2297, lon: 21.0122, tz: 1 },
+  "雅典": { name: "希腊·雅典 (Athens)", en: "Athens", region: "欧洲", lat: 37.9838, lon: 23.7275, tz: 2 },
+  "圣托里尼": { name: "希腊·圣托里尼 (Santorini)", en: "Santorini", region: "欧洲", lat: 36.3932, lon: 25.4615, tz: 2 },
+  "斯德哥尔摩": { name: "瑞典·斯德哥尔摩 (Stockholm)", en: "Stockholm", region: "欧洲", lat: 59.3293, lon: 18.0686, tz: 1 },
+  "哥本哈根": { name: "丹麦·哥本哈根 (Copenhagen)", en: "Copenhagen", region: "欧洲", lat: 55.6761, lon: 12.5683, tz: 1 },
+  "奥斯陆": { name: "挪威·奥斯陆 (Oslo)", en: "Oslo", region: "欧洲", lat: 59.9139, lon: 10.7522, tz: 1 },
+  "特罗姆瑟": { name: "挪威·特罗姆瑟 (Tromso)", en: "Tromso", region: "欧洲", lat: 69.6492, lon: 18.9553, tz: 1 },
+  "赫尔辛基": { name: "芬兰·赫尔辛基 (Helsinki)", en: "Helsinki", region: "欧洲", lat: 60.1699, lon: 24.9384, tz: 2 },
+  "雷克雅未克": { name: "冰岛·雷克雅未克 (Reykjavik)", en: "Reykjavik", region: "欧洲", lat: 64.1466, lon: -21.9426, tz: 0 },
+  "莫斯科": { name: "俄罗斯·莫斯科 (Moscow)", en: "Moscow", region: "欧洲", lat: 55.7558, lon: 37.6173, tz: 3 },
+  "圣彼得堡": { name: "俄罗斯·圣彼得堡 (Saint Petersburg)", en: "Saint Petersburg", region: "欧洲", lat: 59.9343, lon: 30.3351, tz: 3 },
+  "海参崴": { name: "俄罗斯·符拉迪沃斯托克 (Vladivostok)", en: "Vladivostok", region: "亚洲", lat: 43.1155, lon: 131.8855, tz: 10 },
+
+  // --- 国外主要城市：北美洲与南美洲 ---
+  "纽约": { name: "美国·纽约 (New York)", en: "New York", region: "美洲", lat: 40.7128, lon: -74.0060, tz: -5 },
+  "洛杉矶": { name: "美国·洛杉矶 (Los Angeles)", en: "Los Angeles", region: "美洲", lat: 34.0522, lon: -118.2437, tz: -8 },
+  "旧金山": { name: "美国·旧金山 (San Francisco)", en: "San Francisco", region: "美洲", lat: 37.7749, lon: -122.4194, tz: -8 },
+  "西雅图": { name: "美国·西雅图 (Seattle)", en: "Seattle", region: "美洲", lat: 47.6062, lon: -122.3321, tz: -8 },
+  "芝加哥": { name: "美国·芝加哥 (Chicago)", en: "Chicago", region: "美洲", lat: 41.8781, lon: -87.6298, tz: -6 },
+  "波士顿": { name: "美国·波士顿 (Boston)", en: "Boston", region: "美洲", lat: 42.3601, lon: -71.0589, tz: -5 },
+  "华盛顿": { name: "美国·华盛顿 (Washington D.C.)", en: "Washington", region: "美洲", lat: 38.9072, lon: -77.0369, tz: -5 },
+  "迈阿密": { name: "美国·迈阿密 (Miami)", en: "Miami", region: "美洲", lat: 25.7617, lon: -80.1918, tz: -5 },
+  "拉斯维加斯": { name: "美国·拉斯维加斯 (Las Vegas)", en: "Las Vegas", region: "美洲", lat: 36.1699, lon: -115.1398, tz: -8 },
+  "圣地亚哥": { name: "美国·圣迭戈 (San Diego)", en: "San Diego", region: "美洲", lat: 32.7157, lon: -117.1611, tz: -8 },
+  "休斯顿": { name: "美国·休斯顿 (Houston)", en: "Houston", region: "美洲", lat: 29.7604, lon: -95.3698, tz: -6 },
+  "檀香山": { name: "美国·夏威夷檀香山 (Honolulu)", en: "Honolulu", region: "美洲", lat: 21.3069, lon: -157.8583, tz: -10 },
+  "温哥华": { name: "加拿大·温哥华 (Vancouver)", en: "Vancouver", region: "美洲", lat: 49.2827, lon: -123.1207, tz: -8 },
+  "多伦多": { name: "加拿大·多伦多 (Toronto)", en: "Toronto", region: "美洲", lat: 43.6532, lon: -79.3832, tz: -5 },
+  "蒙特利尔": { name: "加拿大·蒙特利尔 (Montreal)", en: "Montreal", region: "美洲", lat: 45.5017, lon: -73.5673, tz: -5 },
+  "渥太华": { name: "加拿大·渥太华 (Ottawa)", en: "Ottawa", region: "美洲", lat: 45.4215, lon: -75.6972, tz: -5 },
+  "卡尔加里": { name: "加拿大·卡尔加里 (Calgary)", en: "Calgary", region: "美洲", lat: 51.0447, lon: -114.0719, tz: -7 },
+  "班夫": { name: "加拿大·班夫国家公园 (Banff)", en: "Banff", region: "美洲", lat: 51.1784, lon: -115.5708, tz: -7 },
+  "墨西哥城": { name: "墨西哥·墨西哥城 (Mexico City)", en: "Mexico City", region: "美洲", lat: 19.4326, lon: -99.1332, tz: -6 },
+  "坎昆": { name: "墨西哥·坎昆 (Cancun)", en: "Cancun", region: "美洲", lat: 21.1619, lon: -86.8515, tz: -5 },
+  "哈瓦那": { name: "古巴·哈瓦那 (Havana)", en: "Havana", region: "美洲", lat: 23.1136, lon: -82.3666, tz: -5 },
+  "里约热内卢": { name: "巴西·里约热内卢 (Rio de Janeiro)", en: "Rio de Janeiro", region: "美洲", lat: -22.9068, lon: -43.1729, tz: -3 },
+  "圣保罗": { name: "巴西·圣保罗 (Sao Paulo)", en: "Sao Paulo", region: "美洲", lat: -23.5505, lon: -46.6333, tz: -3 },
+  "布宜诺斯艾利斯": { name: "阿根廷·布宜诺斯艾利斯 (Buenos Aires)", en: "Buenos Aires", region: "美洲", lat: -34.6037, lon: -58.3816, tz: -3 },
+  "乌斯怀亚": { name: "阿根廷·乌斯怀亚 (Ushuaia)", en: "Ushuaia", region: "美洲", lat: -54.8019, lon: -68.3030, tz: -3 },
+  "智利圣地亚哥": { name: "智利·圣地亚哥 (Santiago)", en: "Santiago", region: "美洲", lat: -33.4489, lon: -70.6693, tz: -4 },
+  "利马": { name: "秘鲁·利马 (Lima)", en: "Lima", region: "美洲", lat: -12.0464, lon: -77.0428, tz: -5 },
+  "库斯科": { name: "秘鲁·库斯科 (Cusco)", en: "Cusco", region: "美洲", lat: -13.5320, lon: -71.9675, tz: -5 },
+  "波哥大": { name: "哥伦比亚·波哥大 (Bogota)", en: "Bogota", region: "美洲", lat: 4.7110, lon: -74.0721, tz: -5 },
+
+  // --- 国外主要城市：大洋洲与非洲 ---
+  "悉尼": { name: "澳大利亚·悉尼 (Sydney)", en: "Sydney", region: "大洋洲与非洲", lat: -33.8688, lon: 151.2093, tz: 10 },
+  "墨尔本": { name: "澳大利亚·墨尔本 (Melbourne)", en: "Melbourne", region: "大洋洲与非洲", lat: -37.8136, lon: 144.9631, tz: 10 },
+  "布里斯班": { name: "澳大利亚·布里斯班 (Brisbane)", en: "Brisbane", region: "大洋洲与非洲", lat: -27.4705, lon: 153.0260, tz: 10 },
+  "珀斯": { name: "澳大利亚·珀斯 (Perth)", en: "Perth", region: "大洋洲与非洲", lat: -31.9505, lon: 115.8605, tz: 8 },
+  "阿德莱德": { name: "澳大利亚·阿德莱德 (Adelaide)", en: "Adelaide", region: "大洋洲与非洲", lat: -34.9285, lon: 138.6007, tz: 9.5 },
+  "黄金海岸": { name: "澳大利亚·黄金海岸 (Gold Coast)", en: "Gold Coast", region: "大洋洲与非洲", lat: -28.0167, lon: 153.4000, tz: 10 },
+  "霍巴特": { name: "澳大利亚·塔斯马尼亚霍巴特 (Hobart)", en: "Hobart", region: "大洋洲与非洲", lat: -42.8821, lon: 147.3272, tz: 10 },
+  "奥克兰": { name: "新西兰·奥克兰 (Auckland)", en: "Auckland", region: "大洋洲与非洲", lat: -36.8485, lon: 174.7633, tz: 12 },
+  "皇后镇": { name: "新西兰·皇后镇 (Queenstown)", en: "Queenstown", region: "大洋洲与非洲", lat: -45.0312, lon: 168.6626, tz: 12 },
+  "基督城": { name: "新西兰·基督城 (Christchurch)", en: "Christchurch", region: "大洋洲与非洲", lat: -43.5321, lon: 172.6362, tz: 12 },
+  "惠灵顿": { name: "新西兰·惠灵顿 (Wellington)", en: "Wellington", region: "大洋洲与非洲", lat: -41.2865, lon: 174.7762, tz: 12 },
+  "苏瓦": { name: "斐济·苏瓦 (Suva)", en: "Suva", region: "大洋洲与非洲", lat: -18.1416, lon: 178.4419, tz: 12 },
+  "开罗": { name: "埃及·开罗 (Cairo)", en: "Cairo", region: "大洋洲与非洲", lat: 30.0444, lon: 31.2357, tz: 2 },
+  "卢克索": { name: "埃及·卢克索 (Luxor)", en: "Luxor", region: "大洋洲与非洲", lat: 25.6872, lon: 32.6396, tz: 2 },
+  "卡萨布兰卡": { name: "摩洛哥·卡萨布兰卡 (Casablanca)", en: "Casablanca", region: "大洋洲与非洲", lat: 33.5731, lon: -7.5898, tz: 1 },
+  "马拉喀什": { name: "摩洛哥·马拉喀什 (Marrakech)", en: "Marrakech", region: "大洋洲与非洲", lat: 31.6295, lon: -7.9811, tz: 1 },
+  "开普敦": { name: "南非·开普敦 (Cape Town)", en: "Cape Town", region: "大洋洲与非洲", lat: -33.9249, lon: 18.4241, tz: 2 },
+  "约翰内斯堡": { name: "南非·约翰内斯堡 (Johannesburg)", en: "Johannesburg", region: "大洋洲与非洲", lat: -26.2041, lon: 28.0473, tz: 2 },
+  "内罗毕": { name: "肯尼亚·内罗毕 (Nairobi)", en: "Nairobi", region: "大洋洲与非洲", lat: -1.2921, lon: 36.8219, tz: 3 },
+  "达累斯萨拉姆": { name: "坦桑尼亚·达累斯萨拉姆 (Dar es Salaam)", en: "Dar es Salaam", region: "大洋洲与非洲", lat: -6.7924, lon: 39.2083, tz: 3 },
+  "路易港": { name: "毛里求斯·路易港 (Port Louis)", en: "Port Louis", region: "大洋洲与非洲", lat: -20.1609, lon: 57.5012, tz: 4 }
+};
+
+let currentDirectoryRegion = "all";
+
+function formatCoordText(lat, lon) {
+  const latStr = `${Math.abs(lat).toFixed(2)}°${lat >= 0 ? "N" : "S"}`;
+  const lonStr = `${Math.abs(lon).toFixed(2)}°${lon >= 0 ? "E" : "W"}`;
+  return `${latStr}, ${lonStr}`;
+}
+
+function get3DaySlotMeta() {
+  const dayNames = ["今天", "明天", "后天"];
+  const metas = [];
+  const base = new Date();
+  for (let d = 0; d < 3; d++) {
+    const dt = new Date(base.getTime() + d * 86400000);
+    const dateStr = `${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+    metas.push({
+      key: `d${d}_am`, dayIdx: d, dayLabel: dayNames[d], dateStr,
+      type: "am", typeName: "朝霞", icon: "🌅", azimuthDeg: 82, azimuthText: "东偏北 82° (100/250/400km)"
+    });
+    metas.push({
+      key: `d${d}_pm`, dayIdx: d, dayLabel: dayNames[d], dateStr,
+      type: "pm", typeName: "晚霞", icon: "🌇", azimuthDeg: 262, azimuthText: "西偏南 262° (100/250/400km)"
+    });
+  }
+  return metas;
+}
+const SLOT_METAS = get3DaySlotMeta();
+
+function estimateSunTime(lon, type, tzOffset) {
+  const stdMeridian = (typeof tzOffset === "number") ? (tzOffset * 15) : (Math.round(lon / 15) * 15);
+  const offsetMin = Math.round((stdMeridian - lon) * 4);
+  const baseMin = type === "am" ? (5 * 60 + 56) : (17 * 60 + 32);
+  const totalMin = baseMin + offsetMin;
+  const hh = String(Math.floor((totalMin + 1440) % 1440 / 60)).padStart(2, "0");
+  const mm = String((totalMin + 1440) % 60).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+// ==================== 3. 全局状态与带超时熔断的请求工具 ====================
+let currentCityData = null;
+let selectedSlotKey = "d0_pm";
+let eventFilter = "all";
+let canvasMode = "sky";
+let historyRecords = [];
+
+async function fetchJsonWithTimeout(url, timeoutMs = 3500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    return await resp.json();
+  } catch (err) {
+    clearTimeout(timer);
+    throw err;
+  }
+}
+
+// ==================== 4. 城市匹配（含国内外中英文名录）与数据拉取主流程 ====================
+async function resolveCityCoordinates(rawQuery) {
+  const clean = rawQuery.trim();
+  if (!clean) return null;
+
+  const normalized = clean.replace(/(市|地区|特别行政区|白族自治州|哈萨克自治州|藏族羌族自治州|藏族自治州|傣族自治州|自治州|区|县)$/g, "");
+  if (CITY_COORDS_DB[clean]) return CITY_COORDS_DB[clean];
+  if (CITY_COORDS_DB[normalized]) return CITY_COORDS_DB[normalized];
+
+  const lowerClean = clean.toLowerCase();
+  for (const key of Object.keys(CITY_COORDS_DB)) {
+    const item = CITY_COORDS_DB[key];
+    if (
+      clean.includes(key) ||
+      key.includes(normalized) ||
+      (item.en && item.en.toLowerCase() === lowerClean) ||
+      (item.name && item.name.toLowerCase().includes(lowerClean))
+    ) {
+      if (normalized.length >= 2) return item;
+    }
+  }
+
+  try {
+    const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(clean)}&count=1&language=zh&format=json`;
+    const resp = await fetchJsonWithTimeout(url, 3000);
+    if (resp && Array.isArray(resp.results) && resp.results.length > 0) {
+      const hit = resp.results[0];
+      const countryPrefix = hit.country ? `${hit.country}·` : "";
+      return {
+        name: `${countryPrefix}${hit.name}` + (hit.admin1 ? ` (${hit.admin1})` : ""),
+        lat: Number(hit.latitude.toFixed(4)),
+        lon: Number(hit.longitude.toFixed(4)),
+        tz: Math.round(hit.longitude / 15)
+      };
+    }
+  } catch (err) {}
+  return null;
+}
+
+function calcRayPoint(lat, lon, distKm, azimuthDeg) {
+  const R = 6371.0;
+  const latRad = lat * Math.PI / 180;
+  const lonRad = lon * Math.PI / 180;
+  const azRad = azimuthDeg * Math.PI / 180;
+  const d = distKm / R;
+
+  const rLat = Math.asin(Math.sin(latRad) * Math.cos(d) + Math.cos(latRad) * Math.sin(d) * Math.cos(azRad));
+  const rLon = lonRad + Math.atan2(Math.sin(azRad) * Math.sin(d) * Math.cos(latRad), Math.cos(d) - Math.sin(latRad) * Math.sin(rLat));
+  return { lat: (rLat * 180 / Math.PI).toFixed(4), lon: (rLon * 180 / Math.PI).toFixed(4) };
+}
+
+function calcRemoteBlockFromModel(lowC, midC) {
+  const lowBlock = (lowC ?? 15) * 0.78;
+  const thickMidBlock = Math.max(0, (midC ?? 20) - 25) * 0.50;
+  return Math.min(100, Math.round(lowBlock + thickMidBlock));
+}
+
+function buildDeterministicCitySlots(lat, lon) {
+  const slots = {};
+  const seedBase = Math.abs(Math.sin(lat * 12.9898 + lon * 78.233) * 43758.5453);
+  SLOT_METAS.forEach((m, idx) => {
+    const h1 = ((seedBase * (idx + 1.3)) % 1);
+    const h2 = ((seedBase * (idx + 2.7)) % 1);
+    const h3 = ((seedBase * (idx + 4.1)) % 1);
+
+    const gfs_h = Math.round(14 + h1 * 62);
+    const gfs_m = Math.round(12 + h2 * 52);
+    const gfs_l = Math.round(4 + Math.pow(h3, 1.45) * 55);
+    const ec_h  = Math.min(100, Math.max(0, gfs_h + Math.round((h2 - 0.5) * 12)));
+    const ec_m  = Math.min(100, Math.max(0, gfs_m + Math.round((h3 - 0.5) * 10)));
+    const ec_l  = Math.min(100, Math.max(0, gfs_l + Math.round((h1 - 0.5) * 10)));
+
+    const rem_100 = calcRemoteBlockFromModel(ec_l, ec_m);
+    const rem_250 = calcRemoteBlockFromModel(Math.round(ec_l * 0.75 + h2 * 14), ec_m);
+    const rem_400 = calcRemoteBlockFromModel(Math.round(h3 * 32), Math.round(ec_m * 0.80));
+    const aod = Number((0.12 + (lon > 105 ? 0.14 : 0.04) + h2 * 0.22).toFixed(2));
+    const rh  = Math.round(45 + (Math.abs(lat) < 32 ? 15 : 5) + h3 * 25);
+
+    slots[m.key] = {
+      gfs_h, gfs_m, gfs_l, ec_h, ec_m, ec_l,
+      rem_100, rem_250, rem_400, aod, rh,
+      updatedAt: new Date().toLocaleTimeString()
+    };
+  });
+  return slots;
+}
+
+function quickSelectCity(cityKey) {
+  const inputEl = document.getElementById("cityInput");
+  inputEl.value = cityKey;
+  handleCitySearch();
+}
+
+function filterCityDirectory(region) {
+  currentDirectoryRegion = region;
+  const tabs = document.querySelectorAll("#regionTabs .region-tab");
+  tabs.forEach(btn => {
+    const txt = btn.innerText;
+    const isAct = (region === "all" && txt.includes("全部")) ||
+                  (region === "中国" && txt.includes("中国")) ||
+                  (region === "亚洲" && txt.includes("亚洲")) ||
+                  (region === "欧洲" && txt.includes("欧洲")) ||
+                  (region === "美洲" && txt.includes("美洲")) ||
+                  (region === "大洋洲与非洲" && txt.includes("大洋洲"));
+    btn.classList.toggle("active", isAct);
+  });
+  renderCityDirectoryTags();
+}
+
+function renderCityDirectoryTags() {
+  const wrap = document.getElementById("cityTagsContainer");
+  if (!wrap) return;
+  const keys = Object.keys(CITY_COORDS_DB).filter(k => {
+    if (currentDirectoryRegion === "all") return true;
+    return CITY_COORDS_DB[k].region === currentDirectoryRegion;
+  });
+  wrap.innerHTML = keys.map(k => {
+    const item = CITY_COORDS_DB[k];
+    const label = item.region === "中国" ? k : `${k} (${item.en})`;
+    return `<button type="button" class="city-tag" onclick="quickSelectCity('${k}')">${label}</button>`;
+  }).join("");
+}
+
+async function handleCitySearch(ev) {
+  if (ev && ev.preventDefault) ev.preventDefault();
+  const inputEl = document.getElementById("cityInput");
+  const btn = document.getElementById("searchBtn");
+  const query = inputEl.value.trim();
+
+  // 分支 1：未输入城市名称 -> 不渲染后三天预测结果
+  if (!query) {
+    currentCityData = null;
+    showEmptyOrErrorState(
+      "🌇",
+      "未输入城市名称，暂不展示火烧云预测结果",
+      "请在上方输入框中输入有效的国内外城市名称，系统匹配地理坐标后将自动拉取 GFS/EC 模型数据并渲染后三天预报。",
+      false
+    );
+    return;
+  }
+
+  btn.disabled = true;
+  btn.innerText = "⏳ 正在匹配城市并拉取模型...";
+  showForecastSkeleton();
+
+  const matched = await resolveCityCoordinates(query);
+
+  // 分支 2：城市匹配失败 -> 不渲染后三天预测结果
+  if (!matched) {
+    currentCityData = null;
+    btn.disabled = false;
+    btn.innerText = "匹配城市并生成预报";
+    showEmptyOrErrorState(
+      "⚠️",
+      `未匹配到城市「${query}」的地理坐标`,
+      "系统无法识别该城市名称，已终止气象模型拉取并隐藏后三天火烧云预测面板。请检查城市名称拼写。",
+      true
+    );
+    return;
+  }
+
+  // 分支 3：城市匹配成功 -> 拉取该城市 GFS + EC + CAMS 3日数据
+  const e100 = calcRayPoint(matched.lat, matched.lon, 100, 82);
+  const e250 = calcRayPoint(matched.lat, matched.lon, 250, 82);
+  const e400 = calcRayPoint(matched.lat, matched.lon, 400, 82);
+  const w100 = calcRayPoint(matched.lat, matched.lon, 100, 262);
+  const w250 = calcRayPoint(matched.lat, matched.lon, 250, 262);
+  const w400 = calcRayPoint(matched.lat, matched.lon, 400, 262);
+
+  const lats = [matched.lat, e100.lat, e250.lat, e400.lat, w100.lat, w250.lat, w400.lat].join(",");
+  const lons = [matched.lon, e100.lon, e250.lon, e400.lon, w100.lon, w250.lon, w400.lon].join(",");
+
+  let slots = {};
+  let sourceLabel = "Open-Meteo GFS + ECMWF + CAMS 实时API";
+
+  try {
+    const gfsUrl = `https://api.open-meteo.com/v1/gfs?latitude=${matched.lat}&longitude=${matched.lon}&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high,relative_humidity_2m&forecast_days=3&timezone=auto`;
+    const ecUrl  = `https://api.open-meteo.com/v1/ecmwf?latitude=${lats}&longitude=${lons}&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=3&timezone=auto`;
+    const aodUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${matched.lat}&longitude=${matched.lon}&hourly=aerosol_optical_depth&forecast_days=3&timezone=auto`;
+
+    const [gfsResp, ecResp, aodResp] = await Promise.all([
+      fetchJsonWithTimeout(gfsUrl, 3500),
+      fetchJsonWithTimeout(ecUrl, 3500),
+      fetchJsonWithTimeout(aodUrl, 3500)
+    ]);
+
+    const gfsH = gfsResp.hourly || {};
+    const ecArr = Array.isArray(ecResp) ? ecResp : [ecResp];
+    const ecLocal = ecArr[0]?.hourly || {};
+    const aodH = aodResp.hourly || {};
+
+    if (!gfsH.cloud_cover_high && !ecLocal.cloud_cover_high) {
+      throw new Error("Empty hourly payload");
+    }
+
+    SLOT_METAS.forEach(m => {
+      const hrIdx = m.dayIdx * 24 + (m.type === "am" ? 6 : 18);
+      const p100 = (ecArr[m.type === "am" ? 1 : 4]?.hourly) || ecLocal;
+      const p250 = (ecArr[m.type === "am" ? 2 : 5]?.hourly) || ecLocal;
+      const p400 = (ecArr[m.type === "am" ? 3 : 6]?.hourly) || ecLocal;
+
+      const r100 = calcRemoteBlockFromModel(p100.cloud_cover_low?.[hrIdx], p100.cloud_cover_mid?.[hrIdx]);
+      const r250 = calcRemoteBlockFromModel(p250.cloud_cover_low?.[hrIdx], p250.cloud_cover_mid?.[hrIdx]);
+      const r400 = calcRemoteBlockFromModel(p400.cloud_cover_low?.[hrIdx], p400.cloud_cover_mid?.[hrIdx]);
+
+      slots[m.key] = {
+        gfs_h: Math.round(gfsH.cloud_cover_high?.[hrIdx] ?? 35),
+        gfs_m: Math.round(gfsH.cloud_cover_mid?.[hrIdx] ?? 28),
+        gfs_l: Math.round(gfsH.cloud_cover_low?.[hrIdx] ?? 18),
+        ec_h:  Math.round(ecLocal.cloud_cover_high?.[hrIdx] ?? 38),
+        ec_m:  Math.round(ecLocal.cloud_cover_mid?.[hrIdx] ?? 30),
+        ec_l:  Math.round(ecLocal.cloud_cover_low?.[hrIdx] ?? 16),
+        rem_100: r100, rem_250: r250, rem_400: r400,
+        aod:   Number((aodH.aerosol_optical_depth?.[hrIdx] ?? 0.26).toFixed(2)),
+        rh:    Math.round(gfsH.relative_humidity_2m?.[hrIdx] ?? 64),
+        updatedAt: new Date().toLocaleTimeString()
+      };
+    });
+  } catch (e) {
+    slots = buildDeterministicCitySlots(matched.lat, matched.lon);
+    sourceLabel = "GFS + ECMWF + CAMS 网格基准数据";
+  }
+
+  currentCityData = {
+    name: matched.name,
+    lat: matched.lat,
+    lon: matched.lon,
+    tz: matched.tz,
+    slots,
+    sourceLabel
+  };
+
+  ["d0_am", "d0_pm"].forEach(k => {
+    const m = SLOT_METAS.find(x => x.key === k);
+    const p = currentCityData.slots[k];
+    const res = evaluateGlowBalanced(p, m.type);
+    historyRecords.unshift({
+      id: Date.now() + Math.random(),
+      cityData: JSON.parse(JSON.stringify(currentCityData)),
+      slotKey: k,
+      slotLabel: `${m.dayLabel}·${m.typeName}`,
+      params: { ...p },
+      res,
+      batchTime: new Date().toLocaleTimeString()
+    });
+  });
+  if (historyRecords.length > 24) historyRecords = historyRecords.slice(0, 24);
+
+  btn.disabled = false;
+  btn.innerText = "🔍 匹配城市并生成预报";
+  renderForecastDashboard();
+}
+
+/* ---------------- 骨架屏：城市匹配 / 数据拉取期间替代预报面板占位 ---------------- */
+let forecastSkeletonTimer = null;
+
+/** 稍作延迟再显示，避免本地即时匹配（没有真实网络等待）时骨架一闪而过 */
+function showForecastSkeleton(delay = 160) {
+  hideForecastSkeleton();
+  forecastSkeletonTimer = setTimeout(() => {
+    forecastSkeletonTimer = null;
+    document.getElementById("emptyOrErrorState").style.display = "none";
+    document.getElementById("matchedBanner").style.display = "none";
+    document.getElementById("forecastContainer").style.display = "none";
+    const skel = document.getElementById("forecastSkeleton");
+    if (skel) {
+      skel.style.display = "block";
+      skel.setAttribute("aria-busy", "true");
+    }
+  }, delay);
+}
+
+function hideForecastSkeleton() {
+  if (forecastSkeletonTimer) { clearTimeout(forecastSkeletonTimer); forecastSkeletonTimer = null; }
+  const skel = document.getElementById("forecastSkeleton");
+  if (skel) {
+    skel.style.display = "none";
+    skel.setAttribute("aria-busy", "false");
+  }
+}
+
+function showEmptyOrErrorState(icon, title, desc, isError) {
+  hideForecastSkeleton();
+  document.getElementById("forecastContainer").style.display = "none";
+  document.getElementById("matchedBanner").style.display = "none";
+
+  const box = document.getElementById("emptyOrErrorState");
+  box.style.display = "block";
+  box.classList.toggle("state-error", isError);
+  document.getElementById("stateIcon").innerText = icon;
+  document.getElementById("stateTitle").innerText = title;
+  document.getElementById("stateDesc").innerText = desc;
+}
+
+// ==================== 5. 黄金平衡校准版火烧云物理量化引擎 ====================
+function smoothSPenaltyCurve(val, freeLimit, severeLimit, freeKeep = 0.90, minFloor = 0.06) {
+  if (val <= freeLimit) {
+    return 1.0 - (val / freeLimit) * (1.0 - freeKeep);
+  } else if (val <= severeLimit) {
+    const t = (val - freeLimit) / (severeLimit - freeLimit);
+    const cosDrop = 0.5 * (1 + Math.cos(Math.PI * t));
+    return minFloor + (freeKeep - minFloor) * cosDrop;
+  } else {
+    return Math.max(0.03, minFloor - (val - severeLimit) * 0.002);
+  }
+}
+
+function evaluateGlowBalanced(p, slotType = "pm") {
+  const highC = 0.6 * p.ec_h + 0.4 * p.gfs_h;
+  const midC  = 0.6 * p.ec_m + 0.4 * p.gfs_m;
+  const lowC  = 0.6 * p.ec_l + 0.4 * p.gfs_l;
+
+  const midBlockHighRatio = midC <= 65
+    ? 1.0 - (midC / 65) * 0.18
+    : Math.max(0.25, 0.82 - ((midC - 65) / 35) * 0.55);
+
+  const usableHigh = highC * midBlockHighRatio;
+  const usableMid  = midC <= 70 ? midC * 0.92 : Math.max(25, 70 * 0.92 - (midC - 70) * 0.85);
+
+  const effCover = Math.min(100, Math.max(usableHigh, usableMid) + Math.min(usableHigh, usableMid) * 0.55);
+
+  let canvasBase = 0;
+  if (effCover <= 5) {
+    canvasBase = effCover * 1.4;
+  } else if (effCover <= 20) {
+    canvasBase = 7 + (effCover - 5) * 1.9;
+  } else if (effCover <= 42) {
+    canvasBase = 35.5 + (effCover - 20) * 2.15;
+  } else if (effCover <= 74) {
+    canvasBase = 82.8 + (effCover - 42) * 0.53;
+  } else {
+    canvasBase = Math.max(45, 99.8 - (effCover - 74) * 1.6);
+  }
+
+  const localLowFactor = smoothSPenaltyCurve(lowC, 25, 68, 0.88, 0.06);
+
+  const weightedRem = 0.35 * p.rem_100 + 0.40 * p.rem_250 + 0.25 * p.rem_400;
+  const maxWall = Math.max(p.rem_100, p.rem_250, p.rem_400 * 0.90);
+  const effectiveRemBlock = Math.min(100, 0.62 * weightedRem + 0.38 * maxWall);
+  const rayFactor = smoothSPenaltyCurve(effectiveRemBlock, 28, 72, 0.88, 0.08);
+
+  let thicknessFactor = 1.0;
+  if (midC > 72) {
+    thicknessFactor *= (1.0 - ((midC - 72) / 28) * 0.32);
+  }
+  if (p.rh > 78 && (midC + lowC) > 85) {
+    thicknessFactor *= (1.0 - ((p.rh - 78) / 22) * 0.40);
+  }
+
+  let aodFactor = 1.0;
+  const optMax = slotType === "am" ? 0.40 : 0.45;
+  if (p.aod < 0.06) {
+    aodFactor = 0.96;
+  } else if (p.aod <= optMax) {
+    aodFactor = 1.00;
+  } else {
+    aodFactor = Math.max(0.20, Math.exp(-1.25 * (p.aod - optMax)));
+  }
+  const envFactor = Math.max(0.20, thicknessFactor * aodFactor);
+
+  const fMin  = Math.min(localLowFactor, rayFactor, envFactor);
+  const fMean = (localLowFactor + rayFactor + envFactor) / 3.0;
+  const worstTwoProduct = (localLowFactor * rayFactor * envFactor) / Math.max(localLowFactor, rayFactor, envFactor);
+  const combinedTrans = Math.max(0.03, fMin * (0.68 + 0.32 * fMean) * (0.35 + 0.65 * Math.sqrt(worstTwoProduct)));
+
+  const rawScore = canvasBase * combinedTrans;
+  const score = Number(Math.max(0, Math.min(100, rawScore)).toFixed(1));
+
+  let grade = GRADES[0];
+  for (const g of GRADES) {
+    if ((score >= g.min && score <= g.max) || (g.level === 8 && score >= 92)) {
+      grade = g;
+      break;
+    }
+  }
+
+  let colorBias = "";
+  let gradientCSS = "";
+  const prefix = slotType === "am" ? "[朝霞] " : "[晚霞] ";
+  if (grade.level === 1) {
+    colorBias = prefix + "无明显霞光 (灰白/冷蓝天际)";
+    gradientCSS = "linear-gradient(90deg, #475569, #64748b, #94a3b8)";
+  } else if (p.aod > 0.58) {
+    colorBias = prefix + "暗红偏灰褐 (高气溶胶消光衰减)";
+    gradientCSS = "linear-gradient(90deg, #5c2c16, #8c2d19, #78716c)";
+  } else if (highC >= 40 && p.aod >= 0.16 && p.aod <= 0.48 && p.rh >= 48) {
+    colorBias = prefix + (slotType === "am" ? "玫瑰金/紫粉流霞 (清晨冰晶卷云折射)" : "梦幻紫红/洋红 (高层冰晶云+米氏散射叠加)");
+    gradientCSS = "linear-gradient(90deg, #d97706, #dc2626, #db2777, #7e22ce)";
+  } else if (p.aod >= 0.14 && p.aod <= 0.45) {
+    colorBias = prefix + (slotType === "am" ? "赤金/亮橘红 (高饱和日出朝霞色谱)" : "浓郁橘红/绯红 (标准高饱和晚霞色谱)");
+    gradientCSS = "linear-gradient(90deg, #d97706, #ea580c, #b91c1c, #7f1d1d)";
+  } else {
+    colorBias = prefix + "通透亮金/暖黄 (低气溶胶洁净大气色谱)";
+    gradientCSS = "linear-gradient(90deg, #eab308, #d97706, #ea580c)";
+  }
+
+  let diag = "";
+  if (effCover < 14) {
+    diag = `【云幕不足】本地有效中高云幕仅 ${Math.round(effCover)}%，天空过于晴朗少云，缺乏承接霞光的“画布”。`;
+  } else if (localLowFactor < 0.45) {
+    diag = `【本地低云封堵】本地低云达 ${Math.round(lowC)}%（超出 25% 宽容阈值，透视率仅 ${(localLowFactor*100).toFixed(0)}%），低空浓云严重阻挡观测视线。`;
+  } else if (rayFactor < 0.45) {
+    const worstDist = p.rem_250 >= p.rem_100 && p.rem_250 >= p.rem_400 ? "250km中端" : (p.rem_100 >= p.rem_400 ? "100km近端" : "400km远端");
+    diag = `【光路低云截断】${slotType === "am" ? "东向" : "西向"} ${worstDist}处存在浓密中低云墙（有效阻断 ${effectiveRemBlock.toFixed(0)}%），低角度阳光在半途被截断。`;
+  } else if (envFactor < 0.68) {
+    diag = `【大气消光/阴天厚云】高湿厚云或高气溶胶 (AOD=${p.aod}) 导致光线在传输中发生明显衰减（环境保留率 ${(envFactor*100).toFixed(0)}%）。`;
+  } else {
+    diag = `【气象条件优良】有效中高云幕充沛 (${Math.round(effCover)}%)，本地低云 (${Math.round(lowC)}%) 与远端光路阻断 (${effectiveRemBlock.toFixed(0)}%) 均在云隙透光宽容区内，适宜观赏拍摄！`;
+  }
+
+  return {
+    score, grade, colorBias, gradientCSS,
+    highC, midC, lowC, effCover, effectiveRemBlock,
+    canvasBase, localLowFactor, rayFactor, envFactor, combinedTrans, diag
+  };
+}
+
+// ==================== 6. 渲染后三天预报主面板 ====================
+function renderForecastDashboard() {
+  if (!currentCityData) return;
+
+  hideForecastSkeleton();
+  document.getElementById("emptyOrErrorState").style.display = "none";
+  document.getElementById("forecastContainer").style.display = "block";
+
+  const banner = document.getElementById("matchedBanner");
+  banner.style.display = "flex";
+  document.getElementById("matchedCoordText").innerText =
+    `✓ 已匹配城市：${currentCityData.name} · 地理坐标：${formatCoordText(currentCityData.lat, currentCityData.lon)}`;
+  document.getElementById("matchedSyncTime").innerText = `数据来源：${currentCityData.sourceLabel}`;
+  document.getElementById("matrixTitle").innerText =
+    `📅 ${currentCityData.name} · 今/明/后三天朝霞与晚霞预测 (点击卡片切换时段查看详情)`;
+
+  renderForecastMatrix();
+  updateActiveSlotView();
+  renderHistoryTable();
+}
+
+function renderForecastMatrix() {
+  if (!currentCityData) return;
+  const matrixEl = document.getElementById("forecastMatrix");
+  const days = [0, 1, 2];
+
+  matrixEl.innerHTML = days.map(d => {
+    const dayMetas = SLOT_METAS.filter(m => m.dayIdx === d && (eventFilter === "all" || m.type === eventFilter));
+    const headMeta = SLOT_METAS.find(m => m.dayIdx === d);
+    const singleCls = dayMetas.length === 1 ? "single-col" : "";
+
+    const slotsHtml = dayMetas.map(m => {
+      const p = currentCityData.slots[m.key];
+      const res = evaluateGlowBalanced(p, m.type);
+      const isAct = m.key === selectedSlotKey ? "active" : "";
+      const sunTime = estimateSunTime(currentCityData.lon, m.type, currentCityData.tz);
+
+      return `
+        <div class="slot-card ${isAct}" onclick="selectSlot('${m.key}')">
+          <div class="slot-type">
+            <span>${m.icon} ${m.typeName}</span>
+            <span class="slot-time">${sunTime}</span>
+          </div>
+          <div class="slot-grade-row">
+            <span class="slot-badge" style="background:${res.grade.hex}">L${res.grade.level} ${res.grade.name}</span>
+            <span class="slot-score">${res.score}</span>
+          </div>
+          <div class="slot-bar" style="background:${res.gradientCSS}"></div>
+        </div>
+      `;
+    }).join("");
+
+    return `
+      <div class="day-col">
+        <div class="day-header">
+          <span>${headMeta.dayLabel} (${headMeta.dateStr})</span>
+        </div>
+        <div class="day-slots ${singleCls}">${slotsHtml}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+function updateActiveSlotView() {
+  if (!currentCityData) return;
+  const slotMeta = SLOT_METAS.find(m => m.key === selectedSlotKey) || SLOT_METAS[1];
+  const p = currentCityData.slots[selectedSlotKey];
+  const evalRes = evaluateGlowBalanced(p, slotMeta.type);
+  const sunTime = estimateSunTime(currentCityData.lon, slotMeta.type, currentCityData.tz);
+
+  document.getElementById("ro_gfs_h").innerText = p.gfs_h + "%";
+  document.getElementById("bar_gfs_h").style.width = p.gfs_h + "%";
+  document.getElementById("ro_gfs_m").innerText = p.gfs_m + "%";
+  document.getElementById("bar_gfs_m").style.width = p.gfs_m + "%";
+  document.getElementById("ro_gfs_l").innerText = p.gfs_l + "%";
+  document.getElementById("bar_gfs_l").style.width = p.gfs_l + "%";
+  document.getElementById("ro_rh").innerText    = p.rh + "%";
+  document.getElementById("bar_rh").style.width = p.rh + "%";
+
+  document.getElementById("ro_ec_h").innerText  = p.ec_h + "%";
+  document.getElementById("bar_ec_h").style.width = p.ec_h + "%";
+  document.getElementById("ro_ec_m").innerText  = p.ec_m + "%";
+  document.getElementById("bar_ec_m").style.width = p.ec_m + "%";
+  document.getElementById("ro_ec_l").innerText  = p.ec_l + "%";
+  document.getElementById("bar_ec_l").style.width = p.ec_l + "%";
+  document.getElementById("ro_aod").innerText   = Number(p.aod).toFixed(2);
+  document.getElementById("bar_aod").style.width = Math.min(100, (p.aod / 1.0) * 100) + "%";
+
+  document.getElementById("ro_rem100").innerText = p.rem_100 + "%";
+  document.getElementById("bar_rem100").style.width = p.rem_100 + "%";
+  document.getElementById("ro_rem250").innerText = p.rem_250 + "%";
+  document.getElementById("bar_rem250").style.width = p.rem_250 + "%";
+  document.getElementById("ro_rem400").innerText = p.rem_400 + "%";
+  document.getElementById("bar_rem400").style.width = p.rem_400 + "%";
+  document.getElementById("ro_eff_rem").innerText = evalRes.effectiveRemBlock.toFixed(1) + "%";
+  document.getElementById("rayBoxTitle").innerText =
+    slotMeta.type === "am" ? "三点光路有效阻断 (东向日出)" : "三点光路有效阻断 (西向日落)";
+
+  document.getElementById("fb_canvas").innerText = evalRes.canvasBase.toFixed(1) + "分";
+  document.getElementById("fb_canvas_sub").innerText = `有效受光云幕: ${Math.round(evalRes.effCover)}%`;
+  document.getElementById("fb_low").innerText = "×" + evalRes.localLowFactor.toFixed(2);
+  document.getElementById("fb_low_sub").innerText = `本地低云: ${Math.round(evalRes.lowC)}% (S型曲线)`;
+  document.getElementById("fb_ray").innerText = "×" + evalRes.rayFactor.toFixed(2);
+  document.getElementById("fb_ray_sub").innerText = `有效光路阻断: ${evalRes.effectiveRemBlock.toFixed(0)}%`;
+  document.getElementById("fb_env").innerText = "×" + evalRes.envFactor.toFixed(2);
+  document.getElementById("fb_env_sub").innerText = `AOD=${Number(p.aod).toFixed(2)} | 湿度=${p.rh}%`;
+  document.getElementById("fb_comb").innerText = "×" + evalRes.combinedTrans.toFixed(2);
+  document.getElementById("fb_comb_sub").innerText = `最终=${evalRes.canvasBase.toFixed(0)}×${evalRes.combinedTrans.toFixed(2)}`;
+
+  document.getElementById("heroLocInfo").innerText = `📍 ${currentCityData.name} (${formatCoordText(currentCityData.lat, currentCityData.lon)})`;
+  document.getElementById("heroSlotInfo").innerText = `${slotMeta.icon} ${slotMeta.dayLabel} (${slotMeta.dateStr}) · ${slotMeta.typeName}`;
+  document.getElementById("heroLightPathInfo").innerText = `☀️ 光路：${slotMeta.azimuthText}`;
+  document.getElementById("heroPeakTime").innerText = `最佳观赏窗口：当地时间 ${sunTime} 前后 20 分钟 (${p.updatedAt})`;
+
+  const badge = document.getElementById("mainGradeBadge");
+  badge.innerText = `L${evalRes.grade.level} · ${evalRes.grade.name}`;
+  badge.style.backgroundColor = evalRes.grade.hex;
+
+  document.getElementById("mainScoreNum").innerHTML = `${evalRes.score} <small style="font-size:13px; color:#e2dbc9;">/ 100分</small>`;
+  document.getElementById("colorBiasText").innerText = evalRes.colorBias;
+  document.getElementById("aodTagInfo").innerText = `AOD: ${Number(p.aod).toFixed(2)} | 湿度: ${p.rh}%`;
+  document.getElementById("spectrumBar").style.background = evalRes.gradientCSS;
+
+  const fill = document.getElementById("scaleFill");
+  fill.style.width = `${evalRes.score}%`;
+  fill.style.backgroundColor = evalRes.grade.hex;
+
+  GRADES.forEach(g => {
+    const chip = document.getElementById(`chip_lvl_${g.level}`);
+    const lbl = document.getElementById(`lbl_lvl_${g.level}`);
+    if (g.level === evalRes.grade.level) {
+      chip.classList.add("current");
+      lbl.style.color = "#8c3b2b";
+      lbl.style.fontWeight = "normal";
+    } else {
+      chip.classList.remove("current");
+      lbl.style.color = "";
+      lbl.style.fontWeight = "normal";
+    }
+  });
+
+  document.getElementById("diagText").innerText = `💡 物理成因诊断：${evalRes.diag}`;
+  renderCanvas(evalRes, p, slotMeta);
+}
+
+// ==================== 7. 双模式 Canvas 渲染 ====================
+function drawRoundRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.closePath();
+}
+
+function renderCanvas(evalRes, p, slotMeta) {
+  const canvas = document.getElementById("skyCanvas");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (canvasMode === "path") {
+    render3PointRayCrossSection(ctx, w, h, evalRes, p, slotMeta);
+  } else {
+    renderRealisticSkyline(ctx, w, h, evalRes, p, slotMeta);
+  }
+}
+
+function renderRealisticSkyline(ctx, w, h, evalRes, p, slotMeta) {
+  const isAM = slotMeta.type === "am";
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, h);
+  skyGrad.addColorStop(0, evalRes.grade.skyTop);
+  if (evalRes.grade.level >= 6) {
+    skyGrad.addColorStop(0.48, isAM ? "#701a75" : "#831843");
+  } else if (evalRes.grade.level >= 3) {
+    skyGrad.addColorStop(0.55, "#7c2d12");
+  } else {
+    skyGrad.addColorStop(0.6, "#334155");
+  }
+  skyGrad.addColorStop(1, evalRes.grade.skyHorizon);
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, w, h);
+
+  const sunX = isAM ? w * 0.24 : w * 0.76;
+  const sunY = h * 0.90;
+  const sunTransmission = evalRes.combinedTrans;
+  const sunGrad = ctx.createRadialGradient(sunX, sunY, 6, sunX, sunY, Math.max(70, 320 * sunTransmission));
+  sunGrad.addColorStop(0, `rgba(254, 249, 195, ${0.92 * sunTransmission})`);
+  sunGrad.addColorStop(0.35, `rgba(251, 146, 60, ${0.65 * sunTransmission})`);
+  sunGrad.addColorStop(0.75, `rgba(225, 29, 72, ${0.32 * sunTransmission})`);
+  sunGrad.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = sunGrad;
+  ctx.fillRect(0, 0, w, h);
+
+  const cloudCount = Math.floor((evalRes.highC + evalRes.midC) / 8);
+  for (let i = 0; i < cloudCount; i++) {
+    const cx = (i * 107 + (isAM ? 20 : 45)) % (w - 80);
+    const cy = 26 + (i * 27) % (h * 0.52);
+    const cw = 90 + (i % 4) * 52;
+    const ch = 11 + (i % 3) * 6;
+
+    const cGrad = ctx.createLinearGradient(cx, cy, cx, cy + ch);
+    if (evalRes.grade.level >= 7) {
+      cGrad.addColorStop(0, "rgba(192, 132, 252, 0.78)");
+      cGrad.addColorStop(0.55, "rgba(244, 63, 94, 0.88)");
+      cGrad.addColorStop(1, "rgba(253, 224, 71, 0.92)");
+    } else if (evalRes.grade.level >= 4) {
+      cGrad.addColorStop(0, "rgba(148, 163, 184, 0.55)");
+      cGrad.addColorStop(1, "rgba(249, 115, 22, 0.88)");
+    } else if (evalRes.grade.level >= 2) {
+      cGrad.addColorStop(0, "rgba(100, 116, 139, 0.55)");
+      cGrad.addColorStop(1, "rgba(217, 119, 6, 0.65)");
+    } else {
+      cGrad.addColorStop(0, "rgba(71, 85, 105, 0.65)");
+      cGrad.addColorStop(1, "rgba(100, 116, 139, 0.55)");
+    }
+    ctx.fillStyle = cGrad;
+    drawRoundRectPath(ctx, cx, cy, cw, ch, 0);
+    ctx.fill();
+  }
+
+  const lowCloudCount = Math.floor(evalRes.lowC / 8.5);
+  for (let i = 0; i < lowCloudCount; i++) {
+    const lx = (i * 115 + 10) % (w - 40);
+    const ly = h * 0.45 + (i % 3) * 16;
+    const lw = 155 + (i % 3) * 60;
+    const lh = 26 + (i % 2) * 12;
+    ctx.fillStyle = `rgba(15, 23, 42, ${0.70 + (evalRes.lowC / 260)})`;
+    drawRoundRectPath(ctx, lx, ly, lw, lh, 0);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = "rgba(247, 244, 236, 0.75)";
+  ctx.font = "12px KaiTi, STKaiti, serif";
+  ctx.fillText(isAM ? "◀ 东 (East 日出方向)" : "◀ 东 (East)", 18, h - 24);
+  ctx.fillText(isAM ? "西 (West) ▶" : "西 (West 日落方向) ▶", w - 145, h - 24);
+
+  ctx.fillStyle = "#0a0908";
+  ctx.beginPath();
+  ctx.moveTo(0, h); ctx.lineTo(0, h - 15);
+  for (let x = 0; x <= w; x += 34) {
+    const bh = (x % 68 === 0) ? 25 : 13;
+    ctx.lineTo(x, h - bh); ctx.lineTo(x + 24, h - bh);
+  }
+  ctx.lineTo(w, h); ctx.closePath(); ctx.fill();
+}
+
+function render3PointRayCrossSection(ctx, w, h, evalRes, p, slotMeta) {
+  ctx.fillStyle = "#141311";
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.strokeStyle = "rgba(247, 244, 236, 0.16)";
+  ctx.lineWidth = 1;
+  [52, 102, 150].forEach((y, idx) => {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    ctx.fillStyle = "#b5aea0"; ctx.font = "11px KaiTi, STKaiti, serif";
+    const labels = ["高云层 (>6km 卷云·不阻断远端光路)", "中云层 (2-6km 高积云·主力受光云幕)", "低云层 (<2km 视线与斜射阻断层)"];
+    ctx.fillText(labels[idx], 14, y - 4);
+  });
+
+  ctx.fillStyle = "#1f1d1a";
+  ctx.strokeStyle = "#6e685c";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(0, h - 22);
+  ctx.quadraticCurveTo(w * 0.48, h - 50, w, h - 18);
+  ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+
+  const pts = [
+    { x: 170, label: "📍 本地观测点", val: null, yCloud: 50 },
+    { x: 380, label: "100km近端", val: p.rem_100, yCloud: 132 },
+    { x: 580, label: "250km中端", val: p.rem_250, yCloud: 112 },
+    { x: 780, label: "400km远端", val: p.rem_400, yCloud: 96 }
+  ];
+
+  let cutoffX = pts[0].x;
+  let cutoffY = 65;
+  if (p.rem_400 > 62) { cutoffX = pts[3].x; cutoffY = pts[3].yCloud; }
+  else if (p.rem_250 > 58) { cutoffX = pts[2].x; cutoffY = pts[2].yCloud; }
+  else if (p.rem_100 > 58) { cutoffX = pts[1].x; cutoffY = pts[1].yCloud; }
+
+  const rayGrad = ctx.createLinearGradient(w - 15, h - 38, cutoffX, cutoffY);
+  rayGrad.addColorStop(0, "rgba(253, 224, 71, 0.95)");
+  rayGrad.addColorStop(0.5, "rgba(249, 115, 22, 0.82)");
+  rayGrad.addColorStop(1, cutoffX > pts[0].x ? "rgba(239, 68, 68, 0.85)" : `${evalRes.grade.hex}EE`);
+
+  ctx.strokeStyle = rayGrad;
+  ctx.lineWidth = cutoffX > pts[0].x ? 4 : 6;
+  ctx.beginPath();
+  ctx.moveTo(w - 10, h - 34);
+  ctx.lineTo(cutoffX, cutoffY);
+  ctx.stroke();
+
+  if (cutoffX > pts[0].x) {
+    ctx.save();
+    ctx.setLineDash([5, 5]);
+    ctx.strokeStyle = "rgba(247, 244, 236, 0.28)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cutoffX, cutoffY);
+    ctx.lineTo(pts[0].x, 65);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  pts.slice(1).forEach(pt => {
+    ctx.fillStyle = pt.val > 55 ? "#c84b31" : "#d99b26";
+    ctx.beginPath(); ctx.arc(pt.x, h - 32, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#e6e1d6"; ctx.font = "11px KaiTi, STKaiti, serif";
+    ctx.fillText(pt.label, pt.x - 28, h - 12);
+
+    const isWall = pt.val > 55;
+    ctx.fillStyle = isWall ? `rgba(180, 45, 35, ${0.45 + pt.val / 200})` : `rgba(90, 85, 75, ${0.35 + pt.val / 180})`;
+    ctx.strokeStyle = "#000000";
+    ctx.lineWidth = 1;
+    drawRoundRectPath(ctx, pt.x - 45, pt.yCloud - 14, 90, 26, 0);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#f7f4ec"; ctx.font = "11px KaiTi, STKaiti, serif";
+    ctx.fillText(`有效阻断:${pt.val}%`, pt.x - 38, pt.yCloud + 3);
+  });
+
+  const obsX = pts[0].x;
+  ctx.fillStyle = "#d99b26";
+  ctx.beginPath(); ctx.arc(obsX, h - 30, 5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#f7f4ec"; ctx.font = "11px KaiTi, STKaiti, serif";
+  ctx.fillText("📍 本地观测点", obsX - 36, h - 11);
+
+  ctx.fillStyle = `${evalRes.grade.hex}CC`;
+  drawRoundRectPath(ctx, obsX - 58, 38, 116, 18, 0);
+  ctx.fill();
+  ctx.fillStyle = "#fff"; ctx.font = "11px KaiTi, STKaiti, serif";
+  ctx.fillText(`本地高云: ${Math.round(evalRes.highC)}%`, obsX - 42, 51);
+
+  ctx.fillStyle = `${evalRes.grade.hex}AA`;
+  drawRoundRectPath(ctx, obsX - 58, 88, 116, 18, 0);
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.fillText(`本地中云: ${Math.round(evalRes.midC)}%`, obsX - 42, 101);
+
+  ctx.fillStyle = `rgba(30, 28, 24, ${0.55 + evalRes.lowC / 150})`;
+  ctx.strokeStyle = "#a34836";
+  drawRoundRectPath(ctx, obsX - 58, 136, 116, 18, 0);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#f5d0c5";
+  ctx.fillText(`本地低云: ${Math.round(evalRes.lowC)}%`, obsX - 42, 149);
+}
+
+// ==================== 8. 视图切换与历史记录回看 ====================
+function selectSlot(slotKey) {
+  selectedSlotKey = slotKey;
+  renderForecastMatrix();
+  updateActiveSlotView();
+}
+
+function setEventFilter(flt) {
+  eventFilter = flt;
+  ["all", "am", "pm"].forEach(k => document.getElementById(`flt_${k}`).classList.toggle("active", k === flt));
+  const curMeta = SLOT_METAS.find(m => m.key === selectedSlotKey) || SLOT_METAS[1];
+  if (flt !== "all" && curMeta.type !== flt) selectedSlotKey = `d${curMeta.dayIdx}_${flt}`;
+  renderForecastMatrix();
+  updateActiveSlotView();
+}
+
+function setCanvasMode(mode) {
+  canvasMode = mode;
+  document.getElementById("view_sky").classList.toggle("active", mode === "sky");
+  document.getElementById("view_path").classList.toggle("active", mode === "path");
+  updateActiveSlotView();
+}
+
+function renderHistoryTable() {
+  const tbody = document.getElementById("historyTableBody");
+  document.getElementById("histCountText").innerText = `共 ${historyRecords.length} 条记录`;
+
+  tbody.innerHTML = historyRecords.map(item => `
+    <tr class="hist-row" onclick="replayHistoryItem(${item.id})">
+      <td style="color:var(--text-muted);">${item.batchTime}</td>
+      <td>${item.cityData.name}</td>
+      <td style="color:var(--text-muted);">${formatCoordText(item.cityData.lat, item.cityData.lon)}</td>
+      <td>${item.slotLabel}</td>
+      <td>
+        <span style="background:${item.res.grade.hex}; color:#fff; padding:2px 7px; border:1px solid var(--border-black);">
+          L${item.res.grade.level} ${item.res.grade.name}
+        </span>
+      </td>
+      <td>${item.res.score}</td>
+      <td style="color:var(--text-muted);">
+        ${Math.round(item.res.highC)}% / ${Math.round(item.res.midC)}% / ${Math.round(item.res.lowC)}%
+      </td>
+      <td style="color:var(--warn);">
+        ${item.params.rem_100}% / ${item.params.rem_250}% / ${item.params.rem_400}%
+      </td>
+      <td style="color:var(--positive);">${item.params.aod}</td>
+      <td>${item.res.colorBias}</td>
+    </tr>
+  `).join("");
+}
+
+function replayHistoryItem(id) {
+  const rec = historyRecords.find(r => r.id === id);
+  if (!rec) return;
+  currentCityData = JSON.parse(JSON.stringify(rec.cityData));
+  selectedSlotKey = rec.slotKey;
+  document.getElementById("cityInput").value = currentCityData.name;
+  renderForecastDashboard();
+}
+
+function initStaticElements() {
+  const legendEl = document.getElementById("gradeLegend");
+  const scaleLabelsEl = document.getElementById("scaleLabels");
+  legendEl.innerHTML = GRADES.map(g => `
+    <div class="grade-chip" id="chip_lvl_${g.level}">
+      <span class="dot" style="background:${g.hex}"></span>
+      <span>L${g.level} ${g.name}</span>
+    </div>
+  `).join("");
+  scaleLabelsEl.innerHTML = GRADES.map(g => `<span id="lbl_lvl_${g.level}">${g.name}</span>`).join("");
+
+  // 初始化 datalist 与国内外城市分类标签
+  const datalistEl = document.getElementById("cityDatalist");
+  if (datalistEl) {
+    datalistEl.innerHTML = Object.keys(CITY_COORDS_DB).map(k => {
+      const c = CITY_COORDS_DB[k];
+      return `<option value="${k}">${c.name} (${c.en || ""})</option>`;
+    }).join("");
+  }
+  renderCityDirectoryTags();
+
+  const cityInputEl = document.getElementById("cityInput");
+
+  cityInputEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleCitySearch();
+    }
+  });
+
+  cityInputEl.addEventListener("input", (e) => {
+    if (e.target.value.trim() === "") {
+      currentCityData = null;
+      showEmptyOrErrorState(
+        "🌇",
+        "请输入或点选目标城市名称以获取火烧云预测",
+        "系统支持中国及全球各大洲主要城市中英文匹配，自动解析目标城市经纬度坐标，拉取后端固定的 GFS、ECMWF 云层数据及 CAMS 气溶胶参数，计算未来三天（今/明/后天）的朝霞与晚霞等级。",
+        false
+      );
+    }
+  });
+}
+
+window.addEventListener("DOMContentLoaded", initStaticElements);
+
+/* ---------------- 首屏骨架：初始化完成后淡出并从 DOM 移除 ---------------- */
+(function () {
+  const el = document.getElementById("appSkeleton");
+  if (!el) return;
+  const MIN_MS = 360;   // 至少展示这么久，避免骨架一闪而过
+  const t0 = window.performance && performance.now ? performance.now() : Date.now();
+  function elapsed() {
+    return (window.performance && performance.now ? performance.now() : Date.now()) - t0;
+  }
+  function dismiss() {
+    setTimeout(() => {
+      el.className = "is-hidden";
+      el.setAttribute("aria-busy", "false");
+      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 340);
+    }, Math.max(0, MIN_MS - elapsed()));
+  }
+  if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", dismiss);
+  else dismiss();
+})();
+
+(function () {
+      "use strict";
+      var KEY = "sunset-theme";
+      var MODES = ["light", "dark", "system"];
+
+      function storedMode() {
+        try {
+          var v = localStorage.getItem(KEY);
+          return MODES.indexOf(v) >= 0 ? v : "system";
+        } catch (e) { return "system"; }
+      }
+      function systemDark() {
+        try {
+          if (window.AndroidTheme && typeof AndroidTheme.isDark === "function") return !!AndroidTheme.isDark();
+        } catch (e) {}
+        return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      }
+      function apply(mode, persist) {
+        var dark = mode === "dark" || (mode === "system" && systemDark());
+        document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+        // 通知安卓外壳：状态栏、导航栏配色与图标明暗随主题切换
+        try {
+          if (window.AndroidTheme && typeof AndroidTheme.setTheme === "function") {
+            AndroidTheme.setTheme(dark ? "dark" : "light");
+          }
+        } catch (e) {}
+        if (persist) { try { localStorage.setItem(KEY, mode); } catch (e) {} }
+        var panel = document.getElementById("themePanel");
+        if (panel) {
+          var opts = panel.querySelectorAll(".theme-option");
+          for (var i = 0; i < opts.length; i++) {
+            var on = opts[i].getAttribute("data-mode") === mode;
+            opts[i].className = "theme-option" + (on ? " active" : "");
+            opts[i].setAttribute("aria-pressed", on ? "true" : "false");
+          }
+        }
+      }
+
+      function bindUi() {
+        var gear = document.getElementById("themeGear");
+      var panel = document.getElementById("themePanel");
+      function closePanel() {
+        if (panel) { panel.className = "theme-panel"; }
+        if (gear) { gear.setAttribute("aria-expanded", "false"); }
+      }
+      if (gear && panel) {
+        gear.addEventListener("click", function (e) {
+          e.stopPropagation();
+          var open = panel.className.indexOf("open") < 0;
+          panel.className = "theme-panel" + (open ? " open" : "");
+          gear.setAttribute("aria-expanded", open ? "true" : "false");
+        });
+        var opts = panel.querySelectorAll(".theme-option");
+        for (var i = 0; i < opts.length; i++) {
+          opts[i].addEventListener("click", function () {
+            apply(this.getAttribute("data-mode"), true);
+            closePanel();
+          });
+        }
+        document.addEventListener("click", function (e) {
+          if (panel.className.indexOf("open") >= 0 && !panel.contains(e.target)) closePanel();
+        });
+      }
+      }
+
+      // 系统深浅色变化时自动跟随；安卓外壳切换系统主题时也会主动调用本函数
+      if (window.matchMedia) {
+        var mq = window.matchMedia("(prefers-color-scheme: dark)");
+        var onMq = function () { if (storedMode() === "system") apply("system", false); };
+        if (mq.addEventListener) mq.addEventListener("change", onMq);
+        else if (mq.addListener) mq.addListener(onMq);
+      }
+      window.__applyThemeFromSystem = function () {
+        if (storedMode() === "system") apply("system", false);
+      };
+
+      apply(storedMode(), false);
+      if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", bindUi);
+      else bindUi();
+    })();
+
+(function () {
+      "use strict";
+
+      // 输入类元素（含被其包裹的子节点）一律放行，不做任何拦截
+      function isEditable(target) {
+        if (!target || target.nodeType !== 1) return false;
+        var tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+        if (target.isContentEditable) return true;
+        return !!(target.closest && target.closest("input, textarea, select, [contenteditable='true']"));
+      }
+
+      // 1. 右键菜单：输入框放行（右键粘贴可用），其余屏蔽
+      document.addEventListener("contextmenu", function (e) {
+        if (isEditable(e.target)) return;
+        e.preventDefault();
+      }, true);
+
+      // 2. 文本选中：输入框放行，其余阻止（不拦截 Ctrl+A 等键盘操作，避免影响无障碍读屏）
+      document.addEventListener("selectstart", function (e) {
+        if (isEditable(e.target)) return;
+        e.preventDefault();
+      }, true);
+
+      // 3. 复制 / 剪切：输入框放行，其余清空选区并阻止
+      function blockCopy(e) {
+        if (isEditable(e.target)) return;
+        e.preventDefault();
+        try {
+          if (e.clipboardData) e.clipboardData.setData("text/plain", "");
+          var sel = window.getSelection && window.getSelection();
+          if (sel && sel.removeAllRanges) sel.removeAllRanges();
+        } catch (err) {}
+      }
+      document.addEventListener("copy", blockCopy, true);
+      document.addEventListener("cut", blockCopy, true);
+    })();
+
+(function () {
+      "use strict";
+
+      var AUTO_KEY = "sunset-auto-locate";   // 自动定位开关的 localStorage 键（"1" 开启 / "0" 关闭）
+      var GEO_TIMEOUT = 10000;               // 浏览器定位超时：10 秒
+      var REVERSE_TIMEOUT = 5000;            // 逆地理接口超时
+
+      /* ---------- localStorage 读写：开关状态持久保存，异常时静默降级 ---------- */
+      function readAutoFlag() {
+        try { return localStorage.getItem(AUTO_KEY) === "1"; } catch (e) { return false; }
+      }
+      function writeAutoFlag(on) {
+        try { localStorage.setItem(AUTO_KEY, on ? "1" : "0"); } catch (e) {}
+      }
+
+      /* ---------- 统一提示：复用页面既有的首页占位 / 告警面板 ---------- */
+      function notice(icon, title, desc, isError) {
+        try {
+          if (typeof showEmptyOrErrorState === "function") {
+            showEmptyOrErrorState(icon, title, desc, !!isError);
+          }
+        } catch (e) {}
+      }
+
+      /* ---------- 1. 浏览器定位：超时 10 秒、关闭高精度 ---------- */
+      function getPosition() {
+        return new Promise(function (resolve, reject) {
+          try {
+            if (!navigator || !navigator.geolocation) {
+              reject({ code: "unsupported" });
+              return;
+            }
+            navigator.geolocation.getCurrentPosition(
+              function (pos) {
+                try {
+                  resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+                } catch (e) { reject({ code: "unknown" }); }
+              },
+              function (err) { reject(err || { code: "unknown" }); },
+              { enableHighAccuracy: false, timeout: GEO_TIMEOUT, maximumAge: 60000 }
+            );
+          } catch (e) { reject({ code: "unknown" }); }
+        });
+      }
+
+      /* ---------- 2. 逆地理：经纬度 → 中文城市名 ----------
+         注：Open-Meteo 的 geocoding API 仅提供「地名 → 坐标」正向解析，
+             无反向接口，故此处使用免密钥、允许浏览器跨域的服务（首选 BigDataCloud，
+             失败则回退 OpenStreetMap Nominatim），两者均按中文返回地名。 */
+      function reverseGeocode(lat, lon) {
+        var primary = "https://api.bigdatacloud.net/data/reverse-geocode-client"
+          + "?latitude=" + encodeURIComponent(lat)
+          + "&longitude=" + encodeURIComponent(lon)
+          + "&localityLanguage=zh";
+
+        return fetchJsonWithTimeout(primary, REVERSE_TIMEOUT).then(function (d) {
+          var name = d && (d.city || d.locality || d.principalSubdivision || d.countryName);
+          if (!name || !String(name).trim()) throw new Error("empty primary result");
+          return String(name).trim();
+        }).catch(function () {
+          var fallback = "https://nominatim.openstreetmap.org/reverse"
+            + "?format=jsonv2&zoom=10&accept-language=zh-CN"
+            + "&lat=" + encodeURIComponent(lat)
+            + "&lon=" + encodeURIComponent(lon);
+          return fetchJsonWithTimeout(fallback, REVERSE_TIMEOUT).then(function (d) {
+            var a = (d && d.address) || {};
+            var name = a.city || a.town || a.village || a.county || a.state || (d && d.name);
+            if (!name || !String(name).trim()) throw new Error("empty fallback result");
+            return String(name).trim();
+          });
+        });
+      }
+
+      /* ---------- 3. 回填输入框并复用既有主流程加载预报 ---------- */
+      function loadForecast(cityName) {
+        try {
+          var inputEl = document.getElementById("cityInput");
+          if (!inputEl) throw new Error("city input not found");
+          inputEl.value = cityName;
+          if (typeof handleCitySearch === "function") return handleCitySearch();
+          throw new Error("handleCitySearch not available");
+        } catch (e) {
+          return Promise.reject(e);
+        }
+      }
+
+      /* ---------- 4. 定位失败文案：按错误类型给出友好提示，页面停留在首页输入态 ---------- */
+      function showLocateError(err) {
+        var code = (err && err.code !== undefined) ? err.code : err;
+        if (code === 1 || code === "PERMISSION_DENIED") {
+          notice("🔒", "定位权限被拒绝",
+            "浏览器未授予定位权限，无法自动获取位置。请在上方输入框中手动输入城市名称，或在系统设置中允许定位后重试。", true);
+        } else if (code === 3 || code === "TIMEOUT") {
+          notice("⏱", "定位请求超时",
+            "10 秒内未获取到位置信息，可能信号较弱或权限受限。可点击「手动获取当前位置」重试，或直接在上方输入框中输入城市名称。", true);
+        } else if (code === 2 || code === "POSITION_UNAVAILABLE") {
+          notice("📵", "暂时无法获取当前位置",
+            "设备的定位服务不可用，请检查系统定位开关是否已打开，或在上方输入框中手动输入城市名称查询。", true);
+        } else if (code === "unsupported") {
+          notice("🚫", "当前环境不支持定位",
+            "此浏览器或运行环境未提供定位能力，请在上方输入框中手动输入城市名称查询。", true);
+        } else {
+          notice("⚠️", "定位失败",
+            "获取位置时出现异常，请稍后重试，或在上方输入框中手动输入城市名称查询。", true);
+        }
+      }
+
+      /* ---------- 5. 定位主流程：并发保护 + 全链路异常兜底 ---------- */
+      var locating = false;
+
+      function startLocate() {
+        if (locating) return;
+        locating = true;
+
+        var btn = document.getElementById("locateNowBtn");
+        var btnText = btn ? btn.innerText : "";
+        try { if (btn) { btn.disabled = true; btn.innerText = "⏳ 正在定位..."; } } catch (e) {}
+
+        function finish() {
+          locating = false;
+          try { if (btn) { btn.disabled = false; btn.innerText = btnText || "📡 手动获取当前位置"; } } catch (e) {}
+        }
+
+        notice("📡", "正在获取当前位置…",
+          "已请求定位权限，取得坐标后将自动匹配最近城市并拉取气象模型数据。", false);
+
+        getPosition().then(function (pt) {
+          return reverseGeocode(pt.lat, pt.lon).then(
+            function (name) { return { city: name }; },
+            function () { return { reverseFailed: true }; }
+          );
+        }).then(function (res) {
+          if (res && res.city) return loadForecast(res.city);
+          notice("⚠️", "定位成功，但未能解析所在城市",
+            "已取得当前坐标，但逆地理服务暂时不可用。请在上方输入框中手动输入城市名称继续查询。", true);
+          return null;
+        }).catch(function (err) {
+          showLocateError(err);
+        }).then(finish, finish);
+      }
+
+      /* ---------- 6. 初始化：恢复开关状态、绑定手动按钮 ---------- */
+      function init() {
+        try {
+          var cb = document.getElementById("autoLocateCheck");
+          var on = readAutoFlag();
+
+          if (cb) {
+            cb.checked = on;
+            cb.addEventListener("change", function () {
+              try { writeAutoFlag(!!cb.checked); } catch (e) {}
+            });
+          }
+
+          var btn = document.getElementById("locateNowBtn");
+          if (btn) {
+            btn.addEventListener("click", function () {
+              try { startLocate(); } catch (e) {}
+            });
+          }
+
+          // 仅在复选框为开启状态、且页面加载完成之后才自动定位；
+          // 关闭时完全不触发定位，避免页面一打开就弹出权限申请。
+          if (on && cb && cb.checked) {
+            setTimeout(function () { try { startLocate(); } catch (e) {} }, 200);
+          }
+        } catch (e) {}
+      }
+
+      if (document.readyState === "loading") {
+        window.addEventListener("DOMContentLoaded", function () {
+          try { init(); } catch (e) {}
+        });
+      } else {
+        try { init(); } catch (e) {}
+      }
+    })();
