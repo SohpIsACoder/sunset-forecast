@@ -277,8 +277,6 @@ const CITY_COORDS_DB = {
   "路易港": { name: "毛里求斯·路易港 (Port Louis)", en: "Port Louis", region: "大洋洲与非洲", lat: -20.1609, lon: 57.5012, tz: 4 }
 };
 
-let currentDirectoryRegion = "all";
-
 function formatCoordText(lat, lon) {
   const latStr = `${Math.abs(lat).toFixed(2)}°${lat >= 0 ? "N" : "S"}`;
   const lonStr = `${Math.abs(lon).toFixed(2)}°${lon >= 0 ? "E" : "W"}`;
@@ -315,8 +313,21 @@ function estimateSunTime(lon, type, tzOffset) {
   return `${hh}:${mm}`;
 }
 
+/** 逆地理失败时的展示城市名：以纯坐标呈现，避免因无法解析地名而中断预报流程。 */
+function formatCoordLabel(lat, lon) {
+  const ns = lat >= 0 ? "N" : "S";
+  const ew = lon >= 0 ? "E" : "W";
+  return `当前位置 (${Math.abs(lat).toFixed(2)}°${ns}, ${Math.abs(lon).toFixed(2)}°${ew})`;
+}
+
 // ==================== 3. 全局状态与带超时熔断的请求工具 ====================
 let currentCityData = null;
+// 定位城市：仅由定位流程（前台 GPS / 后台无界面）写入，是提醒任务的唯一数据源；
+// 手动搜索只更新 currentCityData 用于页面展示，不触碰此变量，避免覆盖定位位置的提醒。
+let locatedCity = null;
+let searchSeq = 0;   // 请求序号：防止旧请求返回后覆盖用户已发起的新查询
+// B：同城同日气象结果缓存（键 = 经纬度 + 日期），上限 32 条，超出按插入顺序淘汰最旧
+const WEATHER_CACHE = {};
 let selectedSlotKey = "d0_pm";
 let eventFilter = "all";
 let canvasMode = "sky";
@@ -336,42 +347,156 @@ async function fetchJsonWithTimeout(url, timeoutMs = 3500) {
   }
 }
 
+/** 单数据源带重试请求：仅对失败的重发，成功即返回；单次超时 4500ms，默认最多尝试 2 次。 */
+async function fetchSourceWithRetry(url, timeoutMs = 4500, attempts = 2) {
+  let lastErr = null;
+  for (let i = 0; i < attempts; i++) {
+    try { return await fetchJsonWithTimeout(url, timeoutMs); }
+    catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("fetch failed");
+}
+
 // ==================== 4. 城市匹配（含国内外中英文名录）与数据拉取主流程 ====================
+
+/** IANA 时区名 → 当前（含夏令时）UTC 偏移小时数；解析失败返回 null，由调用方退回经度估算。 */
+function tzOffsetFromIana(iana) {
+  if (!iana) return null;
+  try {
+    const now = new Date();
+    const dtf = new Intl.DateTimeFormat("en-US", {
+      timeZone: iana, hour12: false,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit"
+    });
+    const p = {};
+    dtf.formatToParts(now).forEach((part) => { p[part.type] = part.value; });
+    const asUTC = Date.UTC(
+      Number(p.year), Number(p.month) - 1, Number(p.day),
+      Number(p.hour) === 24 ? 0 : Number(p.hour), Number(p.minute), Number(p.second)
+    );
+    const offsetHours = (asUTC - Math.floor(now.getTime() / 1000) * 1000) / 3600000;
+    if (!Number.isFinite(offsetHours)) return null;
+    // 归一到 0.25 小时粒度，兼容 5:45 / 5:30 / 9:30 等特殊时区
+    return Math.round(offsetHours * 4) / 4;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** 从 geocoding 多候选中挑最可能的主城：以人口为主、行政级别为辅的综合评分。
+    人口占绝对权重，避免把同名小镇排在大城市之前；行政级别只做小幅加成
+    （注意 PPLA2/PPLA3 等行政区首府编码也常见于大城市，不能仅按编码分级排序）。 */
+function pickBestGeoHit(results) {
+  const adminBonus = (code) => {
+    if (!code) return 0;
+    if (code === "PPLC" || code === "PPLG") return 200000;   // 首都 / 国家政府所在地
+    if (code.startsWith("PPLA")) return 100000;              // PPLA / PPLA2 / PPLA3 / PPLA4 行政首府
+    return 0;
+  };
+  const score = (r) => (r.population || 0) + adminBonus(r.feature_code);
+  return results.slice().sort((a, b) => score(b) - score(a))[0];
+}
+
+/** geocoding 结果缓存（localStorage 持久化，最多 64 条，仅缓存成功结果，避免网络瞬断污染缓存）。 */
+const GEO_CACHE_KEY = "sunset-geo-cache-v2";   // v2：候选排序与低置信标记语义变更，避免命中旧缓存
+const GEO_CACHE = (() => {
+  try {
+    const raw = localStorage.getItem(GEO_CACHE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) { return {}; }
+})();
+
+function geoCacheSet(k, v) {
+  GEO_CACHE[k] = v;
+  try {
+    const keys = Object.keys(GEO_CACHE);
+    if (keys.length > 64) delete GEO_CACHE[keys[0]];
+    localStorage.setItem(GEO_CACHE_KEY, JSON.stringify(GEO_CACHE));
+  } catch (e) {}
+}
+
+/** 在线地名解析：zh / en 两种语言各取 10 条候选，合并去重后统一按综合评分排序，回填真实时区。
+    说明：Open-Meteo 中文地名库对国外城市很稀疏，且中文串仅 language=zh 可匹配，
+    故这里不再"命中即返回"，改为两语言候选并集统一评分，避免被单条低质量中文词条锁死。
+    命中为普通居民点且人口极低时打 lowConfidence 标记，供上层提示用户改用英文名。 */
+async function queryGeocoding(clean) {
+  const hasCJK = /[\u3400-\u9FFF]/.test(clean);
+  const langs = hasCJK ? ["zh", "en"] : ["en", "zh"];
+  const pool = [];
+  const seen = new Set();
+  for (let i = 0; i < langs.length; i++) {
+    try {
+      const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(clean)}&count=10&language=${langs[i]}&format=json`;
+      const resp = await fetchJsonWithTimeout(url, 8000);
+      const list = (resp && Array.isArray(resp.results)) ? resp.results : [];
+      list.forEach((r) => {
+        if (!r || typeof r.latitude !== "number" || typeof r.longitude !== "number") return;
+        const key = `${r.latitude.toFixed(2)},${r.longitude.toFixed(2)}`;   // 同一地点不同语言视为同一条
+        if (seen.has(key)) return;
+        seen.add(key);
+        pool.push(r);
+      });
+    } catch (err) {}
+  }
+  if (pool.length === 0) return null;
+
+  const hit = pickBestGeoHit(pool);
+  const countryPrefix = hit.country ? `${hit.country}·` : "";
+  const tz = tzOffsetFromIana(hit.timezone);
+  return {
+    name: `${countryPrefix}${hit.name}` + (hit.admin1 ? ` (${hit.admin1})` : ""),
+    lat: Number(hit.latitude.toFixed(4)),
+    lon: Number(hit.longitude.toFixed(4)),
+    // 优先使用地名库返回的官方时区；缺失时退回经度估算
+    tz: (tz === null || tz === undefined) ? Math.round(hit.longitude / 15) : tz,
+    // 低置信标记：中文输入 + 命中为普通居民点且人口极低 → 疑似中文译名撞上同名小地方
+    lowConfidence: hasCJK && hit.feature_code === "PPL" && (hit.population || 0) < 25000
+  };
+}
+
 async function resolveCityCoordinates(rawQuery) {
-  const clean = rawQuery.trim();
+  const raw = rawQuery.trim();
+  if (!raw) return null;
+
+  // 去掉「国家·」前缀与「 (省/州)」后缀，使历史记录回看时回填的展示名
+  // （如「中国·景德镇 (江西)」）也能被正确二次搜索
+  const clean = raw.replace(/^[^·]{0,8}·/, "").replace(/\s*\([^)]*\)\s*$/, "").trim();
   if (!clean) return null;
 
   const normalized = clean.replace(/(市|地区|特别行政区|白族自治州|哈萨克自治州|藏族羌族自治州|藏族自治州|傣族自治州|自治州|区|县)$/g, "");
+
+  // ① 内置字典精确命中（原名 / 去后缀名）
   if (CITY_COORDS_DB[clean]) return CITY_COORDS_DB[clean];
   if (CITY_COORDS_DB[normalized]) return CITY_COORDS_DB[normalized];
 
+  // ② 英文名精确命中
   const lowerClean = clean.toLowerCase();
   for (const key of Object.keys(CITY_COORDS_DB)) {
     const item = CITY_COORDS_DB[key];
-    if (
-      clean.includes(key) ||
-      key.includes(normalized) ||
-      (item.en && item.en.toLowerCase() === lowerClean) ||
-      (item.name && item.name.toLowerCase().includes(lowerClean))
-    ) {
-      if (normalized.length >= 2) return item;
-    }
+    if (item.en && item.en.toLowerCase() === lowerClean) return item;
   }
 
-  try {
-    const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(clean)}&count=1&language=zh&format=json`;
-    const resp = await fetchJsonWithTimeout(url, 3000);
-    if (resp && Array.isArray(resp.results) && resp.results.length > 0) {
-      const hit = resp.results[0];
-      const countryPrefix = hit.country ? `${hit.country}·` : "";
-      return {
-        name: `${countryPrefix}${hit.name}` + (hit.admin1 ? ` (${hit.admin1})` : ""),
-        lat: Number(hit.latitude.toFixed(4)),
-        lon: Number(hit.longitude.toFixed(4)),
-        tz: Math.round(hit.longitude / 15)
-      };
+  // ③ 交由 Open-Meteo 权威地名库解析（避免本地模糊匹配把「北海道」劫持成「北海」）
+  //    国际城市优先走在线解析：双语候选合并排序 + 真实时区 + 结果缓存；低置信命中会带标记返回
+  const geoKey = clean.toLowerCase();
+  let geoHit = GEO_CACHE[geoKey] || null;
+  if (!geoHit) {
+    geoHit = await queryGeocoding(clean);
+    if (geoHit) geoCacheSet(geoKey, geoHit);
+  }
+  if (geoHit) return geoHit;
+
+  // ④ 最后兜底：仅接受「前缀匹配」，且输入至少 2 个字符；
+  //    不再使用 clean.includes(key) / item.name.includes(...)，避免子串劫持与国名误命中
+  if (normalized.length >= 2) {
+    for (const key of Object.keys(CITY_COORDS_DB)) {
+      const item = CITY_COORDS_DB[key];
+      if (key.startsWith(normalized) || (item.en && item.en.toLowerCase().startsWith(lowerClean))) {
+        return item;
+      }
     }
-  } catch (err) {}
+  }
   return null;
 }
 
@@ -429,44 +554,15 @@ function quickSelectCity(cityKey) {
   handleCitySearch();
 }
 
-function filterCityDirectory(region) {
-  currentDirectoryRegion = region;
-  const tabs = document.querySelectorAll("#regionTabs .region-tab");
-  tabs.forEach(btn => {
-    const txt = btn.innerText;
-    const isAct = (region === "all" && txt.includes("全部")) ||
-                  (region === "中国" && txt.includes("中国")) ||
-                  (region === "亚洲" && txt.includes("亚洲")) ||
-                  (region === "欧洲" && txt.includes("欧洲")) ||
-                  (region === "美洲" && txt.includes("美洲")) ||
-                  (region === "大洋洲与非洲" && txt.includes("大洋洲"));
-    btn.classList.toggle("active", isAct);
-  });
-  renderCityDirectoryTags();
-}
-
-function renderCityDirectoryTags() {
-  const wrap = document.getElementById("cityTagsContainer");
-  if (!wrap) return;
-  const keys = Object.keys(CITY_COORDS_DB).filter(k => {
-    if (currentDirectoryRegion === "all") return true;
-    return CITY_COORDS_DB[k].region === currentDirectoryRegion;
-  });
-  wrap.innerHTML = keys.map(k => {
-    const item = CITY_COORDS_DB[k];
-    const label = item.region === "中国" ? k : `${k} (${item.en})`;
-    return `<button type="button" class="city-tag" onclick="quickSelectCity('${k}')">${label}</button>`;
-  }).join("");
-}
-
-async function handleCitySearch(ev) {
+async function handleCitySearch(ev, presetCity) {
   if (ev && ev.preventDefault) ev.preventDefault();
   const inputEl = document.getElementById("cityInput");
   const btn = document.getElementById("searchBtn");
   const query = inputEl.value.trim();
+  const mySeq = ++searchSeq;   // 本次请求序号：旧请求返回后会被下面的校验丢弃
 
-  // 分支 1：未输入城市名称 -> 不渲染后三天预测结果
-  if (!query) {
+  // 分支 1：未输入城市名称（且无预置坐标）-> 不渲染后三天预测结果
+  if (!presetCity && !query) {
     currentCityData = null;
     showEmptyOrErrorState(
       "🌇",
@@ -480,7 +576,10 @@ async function handleCitySearch(ev) {
   btn.disabled = true;
   btn.innerText = "⏳ 正在匹配城市并拉取模型...";
 
-  const matched = await resolveCityCoordinates(query);
+  // 定位完成时由 GPS 精确坐标直接进入本流程（presetCity 已给定，跳过地名匹配）；
+  // 手动输入才走地名解析。await 返回后先校验序号，避免被更新的请求覆盖。
+  const matched = presetCity || await resolveCityCoordinates(query);
+  if (mySeq !== searchSeq) return;
 
   // 分支 2：城市匹配失败 -> 不渲染后三天预测结果
   if (!matched) {
@@ -490,7 +589,7 @@ async function handleCitySearch(ev) {
     showEmptyOrErrorState(
       "⚠️",
       `未匹配到城市「${query}」的地理坐标`,
-      "系统无法识别该城市名称，已终止气象模型拉取并隐藏后三天火烧云预测面板。请检查城市名称拼写。",
+      "系统无法识别该城市名称，已终止气象模型拉取并隐藏后三天火烧云预测面板。请检查拼写；国际城市可改用英文名（例：New York）查询。",
       true
     );
     return;
@@ -509,29 +608,56 @@ async function handleCitySearch(ev) {
 
   let slots = {};
   let sourceLabel = "Open-Meteo GFS + ECMWF + CAMS 实时API";
+  let degraded = false;
 
+  // B：同城同日缓存 —— 同一城市在同一天内重复点击直接复用上次结果，保证两次结果一致
+  const cacheDay = (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  })();
+  const cacheKey = `${matched.lat},${matched.lon},${cacheDay}`;
+  const cached = WEATHER_CACHE[cacheKey];
+  if (cached) {
+    slots = JSON.parse(JSON.stringify(cached.slots));
+    sourceLabel = cached.sourceLabel;
+    degraded = cached.degraded;
+  } else {
   try {
     const gfsUrl = `https://api.open-meteo.com/v1/gfs?latitude=${matched.lat}&longitude=${matched.lon}&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high,relative_humidity_2m&forecast_days=3&timezone=auto`;
     const ecUrl  = `https://api.open-meteo.com/v1/ecmwf?latitude=${lats}&longitude=${lons}&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=3&timezone=auto`;
     const aodUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${matched.lat}&longitude=${matched.lon}&hourly=aerosol_optical_depth&forecast_days=3&timezone=auto`;
 
-    const [gfsResp, ecResp, aodResp] = await Promise.all([
-      fetchJsonWithTimeout(gfsUrl, 3500),
-      fetchJsonWithTimeout(ecUrl, 3500),
-      fetchJsonWithTimeout(aodUrl, 3500)
+    // A：三个数据源互不牵连 —— 各自成功各自使用，单个失败只降级该源，不拖垮其余两个
+    // 每个数据源各自独立重试（只重发失败的那一个，已成功的不再重复请求），
+    // 单次超时 4500ms：既能覆盖首屏冷启动建连开销，又避免最坏情况长时间阻塞。
+    const [gfsS, ecS, aodS] = await Promise.allSettled([
+      fetchSourceWithRetry(gfsUrl, 4500, 2),
+      fetchSourceWithRetry(ecUrl, 4500, 2),
+      fetchSourceWithRetry(aodUrl, 4500, 2)
     ]);
+    const gfsResp = gfsS.status === "fulfilled" ? gfsS.value : null;
+    const ecResp  = ecS.status === "fulfilled" ? ecS.value : null;
+    const aodResp = aodS.status === "fulfilled" ? aodS.value : null;
 
-    const gfsH = gfsResp.hourly || {};
-    const ecArr = Array.isArray(ecResp) ? ecResp : [ecResp];
+    const gfsH = (gfsResp && gfsResp.hourly) || {};
+    const ecArr = ecResp ? (Array.isArray(ecResp) ? ecResp : [ecResp]) : [];
     const ecLocal = ecArr[0]?.hourly || {};
-    const aodH = aodResp.hourly || {};
+    const aodH = (aodResp && aodResp.hourly) || {};
 
-    if (!gfsH.cloud_cover_high && !ecLocal.cloud_cover_high) {
+    if (!gfsH.cloud_cover_high && !ecLocal.cloud_cover_high && !aodH.aerosol_optical_depth) {
       throw new Error("Empty hourly payload");
     }
 
+    // E：逐源标记降级，缺失字段仍由下方 ??.默认值 兜底（行为与原逻辑一致）
+    if (!gfsH.cloud_cover_high) degraded = true;
+    if (!ecLocal.cloud_cover_high) degraded = true;
+    if (!aodH.aerosol_optical_depth) degraded = true;
+
     SLOT_METAS.forEach(m => {
-      const hrIdx = m.dayIdx * 24 + (m.type === "am" ? 6 : 18);
+      // 采样时刻改用当地实际日出 / 日落小时（西部与高纬城市不能用固定的 06:00 / 18:00）
+      const sunHourRaw = parseInt(estimateSunTime(matched.lon, m.type, matched.tz).split(":")[0], 10);
+      const sunHour = Number.isFinite(sunHourRaw) ? Math.min(23, Math.max(0, sunHourRaw)) : (m.type === "am" ? 6 : 18);
+      const hrIdx = m.dayIdx * 24 + sunHour;
       const p100 = (ecArr[m.type === "am" ? 1 : 4]?.hourly) || ecLocal;
       const p250 = (ecArr[m.type === "am" ? 2 : 5]?.hourly) || ecLocal;
       const p400 = (ecArr[m.type === "am" ? 3 : 6]?.hourly) || ecLocal;
@@ -556,7 +682,18 @@ async function handleCitySearch(ev) {
   } catch (e) {
     slots = buildDeterministicCitySlots(matched.lat, matched.lon);
     sourceLabel = "GFS + ECMWF + CAMS 网格基准数据";
+    degraded = true;
   }
+    // 仅缓存未降级的真实结果，避免把降级数据固化给后续点击
+    if (!degraded) {
+      WEATHER_CACHE[cacheKey] = { slots: JSON.parse(JSON.stringify(slots)), sourceLabel, degraded };
+      const ck = Object.keys(WEATHER_CACHE);
+      if (ck.length > 32) delete WEATHER_CACHE[ck[0]];
+    }
+  }
+
+  // 气象数据返回后再校验一次序号：若用户已发起新查询，则丢弃本次结果
+  if (mySeq !== searchSeq) return;
 
   currentCityData = {
     name: matched.name,
@@ -564,8 +701,14 @@ async function handleCitySearch(ev) {
     lon: matched.lon,
     tz: matched.tz,
     slots,
-    sourceLabel
+    sourceLabel,
+    degraded,
+    lowConfidence: matched.lowConfidence === true
   };
+
+  // 定位流程（presetCity 由前台 GPS / 后台无界面给定）单独记录「定位城市」；
+  // 手动搜索不写这里，因此其数据只用于页面展示，不会覆盖定位位置的提醒任务。
+  if (presetCity) locatedCity = JSON.parse(JSON.stringify(currentCityData));
 
   ["d0_am", "d0_pm"].forEach(k => {
     const m = SLOT_METAS.find(x => x.key === k);
@@ -573,6 +716,7 @@ async function handleCitySearch(ev) {
     const res = evaluateGlowBalanced(p, m.type);
     historyRecords.unshift({
       id: Date.now() + Math.random(),
+      query: query || currentCityData.name,
       cityData: JSON.parse(JSON.stringify(currentCityData)),
       slotKey: k,
       slotLabel: `${m.dayLabel}·${m.typeName}`,
@@ -739,7 +883,19 @@ function renderForecastDashboard() {
   banner.style.display = "flex";
   document.getElementById("matchedCoordText").innerText =
     `✓ 已匹配城市：${currentCityData.name} · 地理坐标：${formatCoordText(currentCityData.lat, currentCityData.lon)}`;
-  document.getElementById("matchedSyncTime").innerText = `数据来源：${currentCityData.sourceLabel}`;
+  const syncEl = document.getElementById("matchedSyncTime");
+  if (currentCityData.lowConfidence) {
+    syncEl.innerText = currentCityData.degraded
+      ? `⚠ 地名匹配置信度较低，且数据来源已降级（${currentCityData.sourceLabel}）；若城市不符请改用英文名查询`
+      : "⚠ 地名匹配置信度较低，若城市不符请在输入框中改用英文名查询";
+    syncEl.style.color = "var(--warn)";
+  } else if (currentCityData.degraded) {
+    syncEl.innerText = `⚠ 数据来源：${currentCityData.sourceLabel}（部分数据源降级，仅供参考）`;
+    syncEl.style.color = "var(--warn)";
+  } else {
+    syncEl.innerText = `数据来源：${currentCityData.sourceLabel}`;
+    syncEl.style.color = "var(--positive)";
+  }
   document.getElementById("matrixTitle").innerText =
     `📅 ${currentCityData.name} · 今/明/后三天朝霞与晚霞预测 (点击卡片切换时段查看详情)`;
 
@@ -998,6 +1154,8 @@ function render3PointRayCrossSection(ctx, w, h, evalRes, p, slotMeta) {
   ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
   ctx.fill(); ctx.stroke();
 
+  // 朝霞取东向、晚霞取西向光路；三档阻断阈值统一为 55，与云块告警变红的判定保持一致
+  const dirWord = (slotMeta && slotMeta.type === "am") ? "东向" : "西向";
   const pts = [
     { x: 170, label: "📍 本地观测点", val: null, yCloud: 50 },
     { x: 380, label: "100km近端", val: p.rem_100, yCloud: 132 },
@@ -1007,9 +1165,9 @@ function render3PointRayCrossSection(ctx, w, h, evalRes, p, slotMeta) {
 
   let cutoffX = pts[0].x;
   let cutoffY = 65;
-  if (p.rem_400 > 62) { cutoffX = pts[3].x; cutoffY = pts[3].yCloud; }
-  else if (p.rem_250 > 58) { cutoffX = pts[2].x; cutoffY = pts[2].yCloud; }
-  else if (p.rem_100 > 58) { cutoffX = pts[1].x; cutoffY = pts[1].yCloud; }
+  if (p.rem_400 > 55) { cutoffX = pts[3].x; cutoffY = pts[3].yCloud; }
+  else if (p.rem_250 > 55) { cutoffX = pts[2].x; cutoffY = pts[2].yCloud; }
+  else if (p.rem_100 > 55) { cutoffX = pts[1].x; cutoffY = pts[1].yCloud; }
 
   const rayGrad = ctx.createLinearGradient(w - 15, h - 38, cutoffX, cutoffY);
   rayGrad.addColorStop(0, "rgba(253, 224, 71, 0.95)");
@@ -1055,7 +1213,7 @@ function render3PointRayCrossSection(ctx, w, h, evalRes, p, slotMeta) {
   ctx.fillStyle = "#d99b26";
   ctx.beginPath(); ctx.arc(obsX, h - 30, 5, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = "#f7f4ec"; ctx.font = "11px KaiTi, STKaiti, serif";
-  ctx.fillText("📍 本地观测点", obsX - 36, h - 11);
+  ctx.fillText("📍 本地观测点 · " + dirWord, obsX - 36, h - 11);
 
   ctx.fillStyle = `${evalRes.grade.hex}CC`;
   drawRoundRectPath(ctx, obsX - 58, 38, 116, 18, 0);
@@ -1133,7 +1291,7 @@ function replayHistoryItem(id) {
   if (!rec) return;
   currentCityData = JSON.parse(JSON.stringify(rec.cityData));
   selectedSlotKey = rec.slotKey;
-  document.getElementById("cityInput").value = currentCityData.name;
+  document.getElementById("cityInput").value = rec.query || currentCityData.name;
   renderForecastDashboard();
 }
 
@@ -1148,7 +1306,7 @@ function initStaticElements() {
   `).join("");
   scaleLabelsEl.innerHTML = GRADES.map(g => `<span id="lbl_lvl_${g.level}">${g.name}</span>`).join("");
 
-  // 初始化 datalist 与国内外城市分类标签
+  // 初始化城市输入候选列表
   const datalistEl = document.getElementById("cityDatalist");
   if (datalistEl) {
     datalistEl.innerHTML = Object.keys(CITY_COORDS_DB).map(k => {
@@ -1156,7 +1314,6 @@ function initStaticElements() {
       return `<option value="${k}">${c.name} (${c.en || ""})</option>`;
     }).join("");
   }
-  renderCityDirectoryTags();
 
   const cityInputEl = document.getElementById("cityInput");
 
@@ -1169,6 +1326,7 @@ function initStaticElements() {
 
   cityInputEl.addEventListener("input", (e) => {
     if (e.target.value.trim() === "") {
+      searchSeq++;             // 使在途的旧查询失效，避免其返回后覆盖已清空的界面
       currentCityData = null;
       showEmptyOrErrorState(
         "🌇",
@@ -1184,14 +1342,14 @@ window.addEventListener("DOMContentLoaded", initStaticElements);
 
 /* ---------------- 首屏骨架：初始化完成后淡出并从 DOM 移除 ---------------- */
 (function () {
-  const el = document.getElementById("appSkeleton");
-  if (!el) return;
   const MIN_MS = 360;   // 至少展示这么久，避免骨架一闪而过
   const t0 = window.performance && performance.now ? performance.now() : Date.now();
   function elapsed() {
     return (window.performance && performance.now ? performance.now() : Date.now()) - t0;
   }
   function dismiss() {
+    const el = document.getElementById("appSkeleton");
+    if (!el) return;
     setTimeout(() => {
       el.className = "is-hidden";
       el.setAttribute("aria-busy", "false");
@@ -1395,12 +1553,13 @@ window.addEventListener("DOMContentLoaded", initStaticElements);
       }
 
       /* ---------- 3. 回填输入框并复用既有主流程加载预报 ---------- */
-      function loadForecast(cityName) {
+      /* 传入已解析好的城市对象（含 GPS 精确坐标），跳过地名匹配直接拉取预报 */
+      function loadForecast(city) {
         try {
           var inputEl = document.getElementById("cityInput");
           if (!inputEl) throw new Error("city input not found");
-          inputEl.value = cityName;
-          if (typeof handleCitySearch === "function") return handleCitySearch();
+          inputEl.value = city.name;
+          if (typeof handleCitySearch === "function") return handleCitySearch(undefined, city);
           throw new Error("handleCitySearch not available");
         } catch (e) {
           return Promise.reject(e);
@@ -1448,15 +1607,21 @@ window.addEventListener("DOMContentLoaded", initStaticElements);
           "已请求定位权限，取得坐标后将自动匹配最近城市并拉取气象模型数据。", false);
 
         getPosition().then(function (pt) {
+          // 定位成功后直接采用 GPS 精确坐标拉取气象数据；
+          // 逆地理结果仅作为页面展示的城市标题，失败时退回坐标文案，不再中断流程
           return reverseGeocode(pt.lat, pt.lon).then(
-            function (name) { return { city: name }; },
-            function () { return { reverseFailed: true }; }
-          );
-        }).then(function (res) {
-          if (res && res.city) return loadForecast(res.city);
-          notice("⚠️", "定位成功，但未能解析所在城市",
-            "已取得当前坐标，但逆地理服务暂时不可用。请在上方输入框中手动输入城市名称继续查询。", true);
-          return null;
+            function (name) { return name; },
+            function () { return ""; }
+          ).then(function (name) {
+            return {
+              name: name || formatCoordLabel(pt.lat, pt.lon),
+              lat: pt.lat,
+              lon: pt.lon,
+              tz: Math.round(pt.lon / 15)
+            };
+          });
+        }).then(function (city) {
+          return loadForecast(city);
         }).catch(function (err) {
           showLocateError(err);
         }).then(finish, finish);
@@ -1557,34 +1722,47 @@ window.addEventListener("DOMContentLoaded", initStaticElements);
     return g;
   }
 
-  /* ---------- 按当前城市数据 + 通知模式，生成未来提醒任务清单 ---------- */
+  /* ---------- 当前展示的城市是否就是「定位城市」（按经纬度比对） ---------- */
+  function isLocatedCity() {
+    if (!locatedCity || !currentCityData) return false;
+    return Math.abs(currentCityData.lat - locatedCity.lat) < 1e-6
+        && Math.abs(currentCityData.lon - locatedCity.lon) < 1e-6;
+  }
+
+  /* ---------- 按定位城市数据 + 通知模式，生成未来提醒任务清单 ----------
+   * 只有当前展示的城市就是「定位城市」时才生成提醒；手动搜索的城市仅用于页面展示，
+   * 此时返回 null 表示「不改动既有提醒」。提醒内容恒以 locatedCity 为准，
+   * 确保推送的永远是定位位置的霞情。 */
   function buildTasks() {
-    if (!currentCityData || !currentCityData.slots) return [];
+    if (!locatedCity || !isLocatedCity()) return null;
+    var city  = locatedCity;
     var floor = Date.now() + 60 * 1000;   // 至少留 1 分钟，避免刚过点就推送
     var all   = allMode();
     var list  = [];
 
     for (var i = 0; i < SLOT_METAS.length; i++) {
       var m = SLOT_METAS[i];
-      var p = currentCityData.slots[m.key];
+      var p = city.slots[m.key];
       if (!p) continue;
 
       var res  = evaluateGlowBalanced(p, m.type);
-      var when = slotWhen(m, currentCityData);
+      var when = slotWhen(m, city);
       if (!when || when <= floor) continue;
       if (!all && res.score < MID_MIN) continue;   // 「≥中烧」模式过滤
 
       var g = gradeOf(res.score);
+      // 通知文案里的城市名去掉「国家·」前缀（示例：今日上海市的晚霞为中烧。）
+      var cityPlain = String(city.name || "").replace(/^[^·]*·/, "");
       list.push({
         key:     m.key,
         time:    when,
         score:   Math.round(res.score * 10) / 10,
         grade:   g.name,
-        city:    currentCityData.name,
+        level:   g.level,
+        city:    city.name,
         slot:    m.dayLabel + "·" + m.typeName,
-        title:   "🔥 " + currentCityData.name + " " + m.dayLabel + m.typeName + " " + g.name,
-        content: "预计" + g.name + "，" + Math.round(res.score) + " 分，最佳观赏时间约 "
-               + estimateSunTime(currentCityData.lon, m.type, currentCityData.tz) + "。"
+        title:   m.typeName + " · " + g.name,
+        content: "今日" + cityPlain + "的" + m.typeName + "为" + g.name + "。"
       });
     }
 
@@ -1592,11 +1770,18 @@ window.addEventListener("DOMContentLoaded", initStaticElements);
     return list;
   }
 
-  /* ---------- 把任务清单交给原生层（关闭或未定位时传空数组，用于清空待办） ---------- */
+  /* ---------- 把任务清单交给原生层 ----------
+   * · 通知 / 自动定位任一关闭 → 传空数组清空待办；
+   * · 当前展示的不是定位城市 → 跳过同步，保持定位位置的提醒不被手动搜索覆盖。 */
   function syncTasks() {
     var br = bridge();
     if (!br || typeof br.addRemindTask !== "function") return -1;
-    var tasks = (notifyOn() && autoOn()) ? buildTasks() : [];
+    if (!(notifyOn() && autoOn())) {
+      try { br.addRemindTask("[]"); } catch (e) { return -1; }
+      return 0;
+    }
+    var tasks = buildTasks();
+    if (tasks === null) return -1;
     try { br.addRemindTask(JSON.stringify(tasks)); } catch (e) { return -1; }
     return tasks.length;
   }
@@ -1628,7 +1813,7 @@ window.addEventListener("DOMContentLoaded", initStaticElements);
     var opts = document.querySelectorAll("#notifyModes [data-mode]");
     for (var i = 0; i < opts.length; i++) {
       var active = (opts[i].getAttribute("data-mode") === (allMode() ? "all" : "mid"));
-      opts[i].className = "theme-option" + (active ? " active" : "");
+      opts[i].className = "notify-option" + (active ? " active" : "");
       opts[i].setAttribute("aria-pressed", active ? "true" : "false");
     }
   }
@@ -1730,20 +1915,27 @@ window.addEventListener("DOMContentLoaded", initStaticElements);
     }
 
     headlessPosition().then(function (pt) {
+      // 与前台一致：直接用 GPS 坐标拉数，逆地理仅作展示名，失败退回坐标文案
       return headlessCityName(pt.lat, pt.lon).then(
-        function (city) { return city; },
+        function (name) { return name; },
         function () { return ""; }
-      );
+      ).then(function (name) {
+        return {
+          name: name || formatCoordLabel(pt.lat, pt.lon),
+          lat: pt.lat,
+          lon: pt.lon,
+          tz: Math.round(pt.lon / 15)
+        };
+      });
     }).then(function (city) {
-      if (!city) throw { code: "reverse" };
-      input.value = city;
-      return handleCitySearch();
+      input.value = city.name;
+      return handleCitySearch(undefined, city);
     }).then(function () {
       headlessReport({
         ok:    true,
         city:  currentCityData ? currentCityData.name : "",
         mode:  allMode() ? "all" : "mid",
-        tasks: buildTasks()
+        tasks: (buildTasks() || [])
       });
     }).catch(function (err) {
       headlessReport({ ok: false, reason: String((err && err.code) || err || "error") });
