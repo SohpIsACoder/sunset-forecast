@@ -18,17 +18,8 @@
       document.documentElement.setAttribute("data-theme", resolved ? "dark" : "light");
     })();
 
-// ==================== 1. 8级火烧云分级定义 ====================
-const GRADES = [
-  { level: 1, name: "不烧", min: 0, max: 14.9, hex: "#64748B", skyTop: "#0f172a", skyHorizon: "#334155" },
-  { level: 2, name: "微烧", min: 15, max: 29.9, hex: "#C28B28", skyTop: "#1e293b", skyHorizon: "#b45309" },
-  { level: 3, name: "小烧", min: 30, max: 44.9, hex: "#C8701A", skyTop: "#1e1b4b", skyHorizon: "#d97706" },
-  { level: 4, name: "小到中烧", min: 45, max: 57.9, hex: "#C85A1E", skyTop: "#1e1b4b", skyHorizon: "#ea580c" },
-  { level: 5, name: "中烧", min: 58, max: 69.9, hex: "#B84314", skyTop: "#2e1065", skyHorizon: "#ea580c" },
-  { level: 6, name: "中到大烧", min: 70, max: 81.9, hex: "#A82424", skyTop: "#3b0764", skyHorizon: "#dc2626" },
-  { level: 7, name: "大烧", min: 82, max: 91.9, hex: "#9E1C3E", skyTop: "#4a044e", skyHorizon: "#e11d48" },
-  { level: 8, name: "世纪大烧", min: 92, max: 100.0, hex: "#6B2896", skyTop: "#2e1065", skyHorizon: "#ec4899" }
-];
+// ==================== 1. 8级火烧云分级定义（见 algorithm-raw.js） ====================
+/* GRADES 由 algorithm-raw.js 定义，index.html 在本脚本之前加载该文件。 */
 
 // ==================== 2. 内置中国及全球所有主要城市地理坐标字典 ====================
 const CITY_COORDS_DB = {
@@ -283,25 +274,30 @@ function formatCoordText(lat, lon) {
   return `${latStr}, ${lonStr}`;
 }
 
-function get3DaySlotMeta() {
-  const dayNames = ["今天", "明天", "后天"];
+const DAY_WEEK_CN = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+const FORECAST_DAYS = 7;          // v2.0：预报周期由 3 天扩展至 7 天
+const NOTIFY_DAYS = 3;            // 安卓本地提醒仍只覆盖前 3 天
+
+function getSlotMetas(dayCount) {
+  const shortNames = ["今天", "明天", "后天"];
   const metas = [];
   const base = new Date();
-  for (let d = 0; d < 3; d++) {
+  for (let d = 0; d < dayCount; d++) {
     const dt = new Date(base.getTime() + d * 86400000);
     const dateStr = `${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+    const dayLabel = d < 3 ? shortNames[d] : DAY_WEEK_CN[dt.getDay()];
     metas.push({
-      key: `d${d}_am`, dayIdx: d, dayLabel: dayNames[d], dateStr,
-      type: "am", typeName: "朝霞", icon: "🌅", azimuthDeg: 82, azimuthText: "东偏北 82° (100/250/400km)"
+      key: `d${d}_am`, dayIdx: d, dayLabel, dateStr, dateMs: dt.getTime(),
+      type: "am", typeName: "朝霞", icon: "🌅"
     });
     metas.push({
-      key: `d${d}_pm`, dayIdx: d, dayLabel: dayNames[d], dateStr,
-      type: "pm", typeName: "晚霞", icon: "🌇", azimuthDeg: 262, azimuthText: "西偏南 262° (100/250/400km)"
+      key: `d${d}_pm`, dayIdx: d, dayLabel, dateStr, dateMs: dt.getTime(),
+      type: "pm", typeName: "晚霞", icon: "🌇"
     });
   }
   return metas;
 }
-const SLOT_METAS = get3DaySlotMeta();
+const SLOT_METAS = getSlotMetas(FORECAST_DAYS);
 
 function estimateSunTime(lon, type, tzOffset) {
   const stdMeridian = (typeof tzOffset === "number") ? (tzOffset * 15) : (Math.round(lon / 15) * 15);
@@ -311,6 +307,69 @@ function estimateSunTime(lon, type, tzOffset) {
   const hh = String(Math.floor((totalMin + 1440) % 1440 / 60)).padStart(2, "0");
   const mm = String((totalMin + 1440) % 60).padStart(2, "0");
   return `${hh}:${mm}`;
+}
+
+/* ---------------- 真实太阳方位（轻量天文算法，纯 JS 无外部依赖） ----------------
+ * 固定方位角（朝霞 82° / 晚霞 262°）在秋冬会让 100/250/400km 光路采样点整体偏离
+ * 太阳真实入射轴 10°~20°：北半球秋分前后日落方位约 240°~250°，夏至前后约 295°~305°。
+ * 这里按「目标经纬度 + 当天日期」实时求解：
+ *   δ 太阳赤纬（Spencer 傅里叶级数，误差 < 0.1°）
+ *   H0 日出/日落时角 = acos((cos 90.833° − sinφ·sinδ) / (cosφ·cosδ))
+ *   由 H、δ、φ 反解方位角（从正北顺时针，东=90°、南=180°、西=270°）。
+ */
+function sunDeclinationRad(dayOfYear) {
+  const g = 2 * Math.PI / 365 * (dayOfYear - 1 + 0.5);
+  return 0.006918
+    - 0.399912 * Math.cos(g) + 0.070257 * Math.sin(g)
+    - 0.006758 * Math.cos(2 * g) + 0.000907 * Math.sin(2 * g)
+    - 0.002697 * Math.cos(3 * g) + 0.00148 * Math.sin(3 * g);
+}
+
+function sunEventPosition(lat, dateMs, isMorning) {
+  const dt = new Date(dateMs);
+  // 用当地日历日（而非毫秒差）计算年内第几天，避免时区偏移导致整体错一天
+  const dayOfYear = Math.floor(
+    (Date.UTC(dt.getFullYear(), dt.getMonth(), dt.getDate()) - Date.UTC(dt.getFullYear(), 0, 1)) / 86400000
+  ) + 1;
+  const dec = sunDeclinationRad(dayOfYear);
+  const latR = lat * Math.PI / 180;
+  const cosH = (Math.cos(90.833 * Math.PI / 180) - Math.sin(latR) * Math.sin(dec))
+             / (Math.cos(latR) * Math.cos(dec));
+  // |cosH| > 1：极昼 / 极夜，当天没有日出日落，退化为正午方位（北半球约 180°）
+  const polar = Math.abs(cosH) > 1;
+  const H0 = Math.acos(Math.max(-1, Math.min(1, cosH)));
+  const H = isMorning ? -H0 : H0;
+  const alt = Math.asin(Math.sin(latR) * Math.sin(dec) + Math.cos(latR) * Math.cos(dec) * Math.cos(H));
+  // atan2 得到「从南起算、向西为正」的方位角，+180° 转成从正北顺时针
+  let az = Math.atan2(Math.sin(H), Math.cos(H) * Math.sin(latR) - Math.tan(dec) * Math.cos(latR));
+  az = (az * 180 / Math.PI + 180 + 360) % 360;
+  return { azimuth: az, altitude: alt * 180 / Math.PI, polar: polar };
+}
+
+/* 方位角 → 「西偏南 244°」式中文描述（就近取四正方向 + 偏角） */
+function formatAzimuth(deg) {
+  const d = ((deg % 360) + 360) % 360;
+  const cards = [
+    { deg: 0, name: "北", cw: "偏东", ccw: "偏西" },
+    { deg: 90, name: "东", cw: "偏南", ccw: "偏北" },
+    { deg: 180, name: "南", cw: "偏西", ccw: "偏东" },
+    { deg: 270, name: "西", cw: "偏北", ccw: "偏南" }
+  ];
+  let best = cards[0], delta = 360;
+  cards.forEach(function (c) {
+    const t = ((d - c.deg + 540) % 360) - 180;
+    if (Math.abs(t) < Math.abs(delta)) { delta = t; best = c; }
+  });
+  const tail = Math.abs(delta) < 1.5 ? "" : (delta > 0 ? best.cw : best.ccw);
+  return best.name + tail + " " + Math.round(d) + "°";
+}
+
+/* 取某时段（朝霞 / 晚霞）在当前城市的真实太阳方位；altitude 为地平纬度角 */
+function slotSunInfo(meta, city) {
+  const c = city || currentCityData;
+  if (!meta || !c) return { azimuth: 262, altitude: 0, text: "--", polar: false };
+  const pos = sunEventPosition(c.lat, meta.dateMs || Date.now(), meta.type === "am");
+  return { azimuth: pos.azimuth, altitude: pos.altitude, text: formatAzimuth(pos.azimuth), polar: pos.polar };
 }
 
 /** 逆地理失败时的展示城市名：以纯坐标呈现，避免因无法解析地名而中断预报流程。 */
@@ -331,7 +390,6 @@ const WEATHER_CACHE = {};
 let selectedSlotKey = "d0_pm";
 let eventFilter = "all";
 let canvasMode = "sky";
-let historyRecords = [];
 
 async function fetchJsonWithTimeout(url, timeoutMs = 3500) {
   const controller = new AbortController();
@@ -459,7 +517,7 @@ async function resolveCityCoordinates(rawQuery) {
   const raw = rawQuery.trim();
   if (!raw) return null;
 
-  // 去掉「国家·」前缀与「 (省/州)」后缀，使历史记录回看时回填的展示名
+  // 去掉「国家·」前缀与「 (省/州)」后缀，使收藏城市回填的展示名
   // （如「中国·景德镇 (江西)」）也能被正确二次搜索
   const clean = raw.replace(/^[^·]{0,8}·/, "").replace(/\s*\([^)]*\)\s*$/, "").trim();
   if (!clean) return null;
@@ -554,7 +612,9 @@ function quickSelectCity(cityKey) {
   handleCitySearch();
 }
 
-async function handleCitySearch(ev, presetCity) {
+/* isLocate：仅 GPS 定位流程传入 true，用于区分「定位城市」与「收藏城市」，
+   保证安卓提醒始终以定位位置为准，不被收藏城市覆盖。 */
+async function handleCitySearch(ev, presetCity, isLocate) {
   if (ev && ev.preventDefault) ev.preventDefault();
   const inputEl = document.getElementById("cityInput");
   const btn = document.getElementById("searchBtn");
@@ -567,7 +627,7 @@ async function handleCitySearch(ev, presetCity) {
     showEmptyOrErrorState(
       "🌇",
       "未输入城市名称，暂不展示火烧云预测结果",
-      "请在上方输入框中输入有效的国内外城市名称，系统匹配地理坐标后将自动拉取 GFS/EC 模型数据并渲染后三天预报。",
+      "请在上方输入框中输入有效的国内外城市名称，系统匹配地理坐标后将自动拉取 GFS/EC 模型数据并渲染未来七天预报。",
       false
     );
     return;
@@ -589,19 +649,23 @@ async function handleCitySearch(ev, presetCity) {
     showEmptyOrErrorState(
       "⚠️",
       `未匹配到城市「${query}」的地理坐标`,
-      "系统无法识别该城市名称，已终止气象模型拉取并隐藏后三天火烧云预测面板。请检查拼写；国际城市可改用英文名（例：New York）查询。",
+      "系统无法识别该城市名称，已终止气象模型拉取并隐藏未来七天火烧云预测面板。请检查拼写；国际城市可改用英文名（例：New York）查询。",
       true
     );
     return;
   }
 
-  // 分支 3：城市匹配成功 -> 拉取该城市 GFS + EC + CAMS 3日数据
-  const e100 = calcRayPoint(matched.lat, matched.lon, 100, 82);
-  const e250 = calcRayPoint(matched.lat, matched.lon, 250, 82);
-  const e400 = calcRayPoint(matched.lat, matched.lon, 400, 82);
-  const w100 = calcRayPoint(matched.lat, matched.lon, 100, 262);
-  const w250 = calcRayPoint(matched.lat, matched.lon, 250, 262);
-  const w400 = calcRayPoint(matched.lat, matched.lon, 400, 262);
+  // 分支 3：城市匹配成功 -> 拉取该城市 GFS + EC + CAMS 数据
+  // 光路采样点沿「真实太阳入射轴」布置：按该经纬度 + 今天日期求解日出 / 日落方位角
+  // （7 天窗口内赤纬变化 < 1°，方位漂移 < 3°，远小于 100km 采样间距）
+  const amAz = sunEventPosition(matched.lat, Date.now(), true).azimuth;
+  const pmAz = sunEventPosition(matched.lat, Date.now(), false).azimuth;
+  const e100 = calcRayPoint(matched.lat, matched.lon, 100, amAz);
+  const e250 = calcRayPoint(matched.lat, matched.lon, 250, amAz);
+  const e400 = calcRayPoint(matched.lat, matched.lon, 400, amAz);
+  const w100 = calcRayPoint(matched.lat, matched.lon, 100, pmAz);
+  const w250 = calcRayPoint(matched.lat, matched.lon, 250, pmAz);
+  const w400 = calcRayPoint(matched.lat, matched.lon, 400, pmAz);
 
   const lats = [matched.lat, e100.lat, e250.lat, e400.lat, w100.lat, w250.lat, w400.lat].join(",");
   const lons = [matched.lon, e100.lon, e250.lon, e400.lon, w100.lon, w250.lon, w400.lon].join(",");
@@ -623,9 +687,9 @@ async function handleCitySearch(ev, presetCity) {
     degraded = cached.degraded;
   } else {
   try {
-    const gfsUrl = `https://api.open-meteo.com/v1/gfs?latitude=${matched.lat}&longitude=${matched.lon}&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high,relative_humidity_2m&forecast_days=3&timezone=auto`;
-    const ecUrl  = `https://api.open-meteo.com/v1/ecmwf?latitude=${lats}&longitude=${lons}&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=3&timezone=auto`;
-    const aodUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${matched.lat}&longitude=${matched.lon}&hourly=aerosol_optical_depth&forecast_days=3&timezone=auto`;
+    const gfsUrl = `https://api.open-meteo.com/v1/gfs?latitude=${matched.lat}&longitude=${matched.lon}&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high,relative_humidity_2m,precipitation_probability,weather_code&forecast_days=7&timezone=auto`;
+    const ecUrl  = `https://api.open-meteo.com/v1/ecmwf?latitude=${lats}&longitude=${lons}&hourly=cloud_cover_low,cloud_cover_mid,cloud_cover_high&forecast_days=7&timezone=auto`;
+    const aodUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${matched.lat}&longitude=${matched.lon}&hourly=aerosol_optical_depth&forecast_days=7&timezone=auto`;
 
     // A：三个数据源互不牵连 —— 各自成功各自使用，单个失败只降级该源，不拖垮其余两个
     // 每个数据源各自独立重试（只重发失败的那一个，已成功的不再重复请求），
@@ -676,6 +740,9 @@ async function handleCitySearch(ev, presetCity) {
         rem_100: r100, rem_250: r250, rem_400: r400,
         aod:   Number((aodH.aerosol_optical_depth?.[hrIdx] ?? 0.26).toFixed(2)),
         rh:    Math.round(gfsH.relative_humidity_2m?.[hrIdx] ?? 64),
+        // 降水概率 / WMO 天气现象码：交给评分引擎做「一票否决」熔断
+        pop:   Math.round(gfsH.precipitation_probability?.[hrIdx] ?? 0),
+        wx:    Math.round(gfsH.weather_code?.[hrIdx] ?? 0),
         updatedAt: new Date().toLocaleTimeString()
       };
     });
@@ -706,26 +773,9 @@ async function handleCitySearch(ev, presetCity) {
     lowConfidence: matched.lowConfidence === true
   };
 
-  // 定位流程（presetCity 由前台 GPS / 后台无界面给定）单独记录「定位城市」；
-  // 手动搜索不写这里，因此其数据只用于页面展示，不会覆盖定位位置的提醒任务。
-  if (presetCity) locatedCity = JSON.parse(JSON.stringify(currentCityData));
-
-  ["d0_am", "d0_pm"].forEach(k => {
-    const m = SLOT_METAS.find(x => x.key === k);
-    const p = currentCityData.slots[k];
-    const res = evaluateGlowBalanced(p, m.type);
-    historyRecords.unshift({
-      id: Date.now() + Math.random(),
-      query: query || currentCityData.name,
-      cityData: JSON.parse(JSON.stringify(currentCityData)),
-      slotKey: k,
-      slotLabel: `${m.dayLabel}·${m.typeName}`,
-      params: { ...p },
-      res,
-      batchTime: new Date().toLocaleTimeString()
-    });
-  });
-  if (historyRecords.length > 24) historyRecords = historyRecords.slice(0, 24);
+  // 定位流程（前台 GPS / 后台无界面给定）单独记录「定位城市」；
+  // 手动搜索与收藏城市不写这里，因此其数据只用于页面展示，不会覆盖定位位置的提醒任务。
+  if (presetCity && isLocate) locatedCity = JSON.parse(JSON.stringify(currentCityData));
 
   btn.disabled = false;
   btn.innerText = "🔍 匹配城市并生成预报";
@@ -749,128 +799,9 @@ function showEmptyOrErrorState(icon, title, desc, isError) {
   document.getElementById("stateDesc").innerText = desc;
 }
 
-// ==================== 5. 黄金平衡校准版火烧云物理量化引擎 ====================
-function smoothSPenaltyCurve(val, freeLimit, severeLimit, freeKeep = 0.90, minFloor = 0.06) {
-  if (val <= freeLimit) {
-    return 1.0 - (val / freeLimit) * (1.0 - freeKeep);
-  } else if (val <= severeLimit) {
-    const t = (val - freeLimit) / (severeLimit - freeLimit);
-    const cosDrop = 0.5 * (1 + Math.cos(Math.PI * t));
-    return minFloor + (freeKeep - minFloor) * cosDrop;
-  } else {
-    return Math.max(0.03, minFloor - (val - severeLimit) * 0.002);
-  }
-}
-
-function evaluateGlowBalanced(p, slotType = "pm") {
-  const highC = 0.6 * p.ec_h + 0.4 * p.gfs_h;
-  const midC  = 0.6 * p.ec_m + 0.4 * p.gfs_m;
-  const lowC  = 0.6 * p.ec_l + 0.4 * p.gfs_l;
-
-  const midBlockHighRatio = midC <= 65
-    ? 1.0 - (midC / 65) * 0.18
-    : Math.max(0.25, 0.82 - ((midC - 65) / 35) * 0.55);
-
-  const usableHigh = highC * midBlockHighRatio;
-  const usableMid  = midC <= 70 ? midC * 0.92 : Math.max(25, 70 * 0.92 - (midC - 70) * 0.85);
-
-  const effCover = Math.min(100, Math.max(usableHigh, usableMid) + Math.min(usableHigh, usableMid) * 0.55);
-
-  let canvasBase = 0;
-  if (effCover <= 5) {
-    canvasBase = effCover * 1.4;
-  } else if (effCover <= 20) {
-    canvasBase = 7 + (effCover - 5) * 1.9;
-  } else if (effCover <= 42) {
-    canvasBase = 35.5 + (effCover - 20) * 2.15;
-  } else if (effCover <= 74) {
-    canvasBase = 82.8 + (effCover - 42) * 0.53;
-  } else {
-    canvasBase = Math.max(45, 99.8 - (effCover - 74) * 1.6);
-  }
-
-  const localLowFactor = smoothSPenaltyCurve(lowC, 25, 68, 0.88, 0.06);
-
-  const weightedRem = 0.35 * p.rem_100 + 0.40 * p.rem_250 + 0.25 * p.rem_400;
-  const maxWall = Math.max(p.rem_100, p.rem_250, p.rem_400 * 0.90);
-  const effectiveRemBlock = Math.min(100, 0.62 * weightedRem + 0.38 * maxWall);
-  const rayFactor = smoothSPenaltyCurve(effectiveRemBlock, 28, 72, 0.88, 0.08);
-
-  let thicknessFactor = 1.0;
-  if (midC > 72) {
-    thicknessFactor *= (1.0 - ((midC - 72) / 28) * 0.32);
-  }
-  if (p.rh > 78 && (midC + lowC) > 85) {
-    thicknessFactor *= (1.0 - ((p.rh - 78) / 22) * 0.40);
-  }
-
-  let aodFactor = 1.0;
-  const optMax = slotType === "am" ? 0.40 : 0.45;
-  if (p.aod < 0.06) {
-    aodFactor = 0.96;
-  } else if (p.aod <= optMax) {
-    aodFactor = 1.00;
-  } else {
-    aodFactor = Math.max(0.20, Math.exp(-1.25 * (p.aod - optMax)));
-  }
-  const envFactor = Math.max(0.20, thicknessFactor * aodFactor);
-
-  const fMin  = Math.min(localLowFactor, rayFactor, envFactor);
-  const fMean = (localLowFactor + rayFactor + envFactor) / 3.0;
-  const worstTwoProduct = (localLowFactor * rayFactor * envFactor) / Math.max(localLowFactor, rayFactor, envFactor);
-  const combinedTrans = Math.max(0.03, fMin * (0.68 + 0.32 * fMean) * (0.35 + 0.65 * Math.sqrt(worstTwoProduct)));
-
-  const rawScore = canvasBase * combinedTrans;
-  const score = Number(Math.max(0, Math.min(100, rawScore)).toFixed(1));
-
-  let grade = GRADES[0];
-  for (const g of GRADES) {
-    if ((score >= g.min && score <= g.max) || (g.level === 8 && score >= 92)) {
-      grade = g;
-      break;
-    }
-  }
-
-  let colorBias = "";
-  let gradientCSS = "";
-  const prefix = slotType === "am" ? "[朝霞] " : "[晚霞] ";
-  if (grade.level === 1) {
-    colorBias = prefix + "无明显霞光 (灰白/冷蓝天际)";
-    gradientCSS = "linear-gradient(90deg, #475569, #64748b, #94a3b8)";
-  } else if (p.aod > 0.58) {
-    colorBias = prefix + "暗红偏灰褐 (高气溶胶消光衰减)";
-    gradientCSS = "linear-gradient(90deg, #5c2c16, #8c2d19, #78716c)";
-  } else if (highC >= 40 && p.aod >= 0.16 && p.aod <= 0.48 && p.rh >= 48) {
-    colorBias = prefix + (slotType === "am" ? "玫瑰金/紫粉流霞 (清晨冰晶卷云折射)" : "梦幻紫红/洋红 (高层冰晶云+米氏散射叠加)");
-    gradientCSS = "linear-gradient(90deg, #d97706, #dc2626, #db2777, #7e22ce)";
-  } else if (p.aod >= 0.14 && p.aod <= 0.45) {
-    colorBias = prefix + (slotType === "am" ? "赤金/亮橘红 (高饱和日出朝霞色谱)" : "浓郁橘红/绯红 (标准高饱和晚霞色谱)");
-    gradientCSS = "linear-gradient(90deg, #d97706, #ea580c, #b91c1c, #7f1d1d)";
-  } else {
-    colorBias = prefix + "通透亮金/暖黄 (低气溶胶洁净大气色谱)";
-    gradientCSS = "linear-gradient(90deg, #eab308, #d97706, #ea580c)";
-  }
-
-  let diag = "";
-  if (effCover < 14) {
-    diag = `【云幕不足】本地有效中高云幕仅 ${Math.round(effCover)}%，天空过于晴朗少云，缺乏承接霞光的“画布”。`;
-  } else if (localLowFactor < 0.45) {
-    diag = `【本地低云封堵】本地低云达 ${Math.round(lowC)}%（超出 25% 宽容阈值，透视率仅 ${(localLowFactor*100).toFixed(0)}%），低空浓云严重阻挡观测视线。`;
-  } else if (rayFactor < 0.45) {
-    const worstDist = p.rem_250 >= p.rem_100 && p.rem_250 >= p.rem_400 ? "250km中端" : (p.rem_100 >= p.rem_400 ? "100km近端" : "400km远端");
-    diag = `【光路低云截断】${slotType === "am" ? "东向" : "西向"} ${worstDist}处存在浓密中低云墙（有效阻断 ${effectiveRemBlock.toFixed(0)}%），低角度阳光在半途被截断。`;
-  } else if (envFactor < 0.68) {
-    diag = `【大气消光/阴天厚云】高湿厚云或高气溶胶 (AOD=${p.aod}) 导致光线在传输中发生明显衰减（环境保留率 ${(envFactor*100).toFixed(0)}%）。`;
-  } else {
-    diag = `【气象条件优良】有效中高云幕充沛 (${Math.round(effCover)}%)，本地低云 (${Math.round(lowC)}%) 与远端光路阻断 (${effectiveRemBlock.toFixed(0)}%) 均在云隙透光宽容区内，适宜观赏拍摄！`;
-  }
-
-  return {
-    score, grade, colorBias, gradientCSS,
-    highC, midC, lowC, effCover, effectiveRemBlock,
-    canvasBase, localLowFactor, rayFactor, envFactor, combinedTrans, diag
-  };
-}
+// ==================== 5. 黄金平衡校准版火烧云物理量化引擎（已拆分至 algorithm-raw.js） ====================
+/* 评分引擎 smoothSPenaltyCurve / evaluateGlowBalanced 由 algorithm-raw.js 提供，
+   index.html 在本脚本之前加载该文件；调整评分模型时只需修改那一个文件。 */
 
 // ==================== 6. 渲染后三天预报主面板 ====================
 function renderForecastDashboard() {
@@ -881,27 +812,40 @@ function renderForecastDashboard() {
 
   const banner = document.getElementById("matchedBanner");
   banner.style.display = "flex";
-  document.getElementById("matchedCoordText").innerText =
-    `✓ 已匹配城市：${currentCityData.name} · 地理坐标：${formatCoordText(currentCityData.lat, currentCityData.lon)}`;
+  document.getElementById("matchedCoordText").innerText = `✓ 已匹配城市：${currentCityData.name}`;
   const syncEl = document.getElementById("matchedSyncTime");
   if (currentCityData.lowConfidence) {
     syncEl.innerText = currentCityData.degraded
       ? `⚠ 地名匹配置信度较低，且数据来源已降级（${currentCityData.sourceLabel}）；若城市不符请改用英文名查询`
       : "⚠ 地名匹配置信度较低，若城市不符请在输入框中改用英文名查询";
     syncEl.style.color = "var(--warn)";
+    syncEl.style.display = "";
   } else if (currentCityData.degraded) {
     syncEl.innerText = `⚠ 数据来源：${currentCityData.sourceLabel}（部分数据源降级，仅供参考）`;
     syncEl.style.color = "var(--warn)";
+    syncEl.style.display = "";
   } else {
-    syncEl.innerText = `数据来源：${currentCityData.sourceLabel}`;
-    syncEl.style.color = "var(--positive)";
+    // 正常情况下不再展示数据来源，仅保留低置信度 / 数据源降级时的警示
+    syncEl.innerText = "";
+    syncEl.style.display = "none";
   }
   document.getElementById("matrixTitle").innerText =
-    `📅 ${currentCityData.name} · 今/明/后三天朝霞与晚霞预测 (点击卡片切换时段查看详情)`;
+    `📅 ${currentCityData.name} · 未来七天朝霞与晚霞预测`;
 
   renderForecastMatrix();
   updateActiveSlotView();
-  renderHistoryTable();
+  renderTrendChart();
+  renderFavorites();
+
+  // 切换城市时播放一次入场动效（点击时段不会重播）
+  ["forecastMatrix", "trendWrap"].forEach(function (id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.remove("is-fresh");
+    void el.offsetWidth;
+    el.classList.add("is-fresh");
+    setTimeout(function () { el.classList.remove("is-fresh"); }, 700);
+  });
 
   // 前台渲染完成后，把最近一次达标朝霞/晚霞交给安卓原生层做定时提醒
   if (typeof window.__pushRemindTasks === "function") {
@@ -912,7 +856,8 @@ function renderForecastDashboard() {
 function renderForecastMatrix() {
   if (!currentCityData) return;
   const matrixEl = document.getElementById("forecastMatrix");
-  const days = [0, 1, 2];
+  const days = [];
+  for (let d = 0; d < FORECAST_DAYS; d++) days.push(d);
 
   matrixEl.innerHTML = days.map(d => {
     const dayMetas = SLOT_METAS.filter(m => m.dayIdx === d && (eventFilter === "all" || m.type === eventFilter));
@@ -926,7 +871,7 @@ function renderForecastMatrix() {
       const sunTime = estimateSunTime(currentCityData.lon, m.type, currentCityData.tz);
 
       return `
-        <div class="slot-card ${isAct}" onclick="selectSlot('${m.key}')">
+        <div class="slot-card ${isAct}" data-key="${m.key}" onclick="selectSlot('${m.key}')">
           <div class="slot-type">
             <span>${m.icon} ${m.typeName}</span>
             <span class="slot-time">${sunTime}</span>
@@ -951,6 +896,136 @@ function renderForecastMatrix() {
   }).join("");
 }
 
+/* ---------------- 七日霞光指数趋势（原生 SVG，无第三方图表库） ----------------
+ * 朝霞 / 晚霞两条折线 + 每日最高分浅色柱，标注整周最高分出片时段；
+ * 每个数据点都绑定 selectSlot，点击即切换下方详情卡片与天空画布（双向联动）。 */
+const TREND_W = 760;
+const TREND_H = 286;
+const TREND_AM_COLOR = "#c8701a";
+const TREND_PM_COLOR = "#9e1c3e";
+
+function buildTrendSeries() {
+  const days = [];
+  for (let d = 0; d < FORECAST_DAYS; d++) {
+    const amMeta = SLOT_METAS.find(x => x.dayIdx === d && x.type === "am");
+    const pmMeta = SLOT_METAS.find(x => x.dayIdx === d && x.type === "pm");
+    const pick = (meta) => {
+      if (!meta) return null;
+      const p = currentCityData.slots[meta.key];
+      if (!p) return null;
+      const r = evaluateGlowBalanced(p, meta.type);
+      return { meta, score: r.score, grade: r.grade };
+    };
+    days.push({
+      idx: d,
+      label: amMeta ? amMeta.dayLabel : `D${d + 1}`,
+      dateStr: amMeta ? amMeta.dateStr : "",
+      am: pick(amMeta),
+      pm: pick(pmMeta)
+    });
+  }
+  return days;
+}
+
+function renderTrendChart() {
+  const wrap = document.getElementById("trendWrap");
+  if (!wrap || !currentCityData) return;
+
+  const days = buildTrendSeries();
+  const padL = 44, padR = 16, padT = 34, padB = 56;
+  const cw = TREND_W - padL - padR;
+  const ch = TREND_H - padT - padB;
+  const step = cw / FORECAST_DAYS;
+  const X = (d) => padL + step * (d + 0.5);
+  const Y = (s) => padT + ch * (1 - Math.max(0, Math.min(100, s)) / 100);
+
+  let best = null;
+  days.forEach((day) => {
+    ["am", "pm"].forEach((t) => {
+      const o = day[t];
+      if (o && (!best || o.score > best.score)) best = o;
+    });
+  });
+
+  let grid = "";
+  [0, 25, 50, 75, 100].forEach((v) => {
+    const y = Y(v);
+    grid += `<line x1="${padL}" y1="${y}" x2="${TREND_W - padR}" y2="${y}" stroke="currentColor" stroke-opacity="0.14" stroke-width="1" stroke-dasharray="3 4"/>`;
+    grid += `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-size="11" fill="currentColor" fill-opacity="0.5">${v}</text>`;
+  });
+
+  let bars = "";
+  days.forEach((day, i) => {
+    const top = Math.max(day.am ? day.am.score : 0, day.pm ? day.pm.score : 0);
+    if (top <= 0) return;
+    const bh = ch * top / 100;
+    bars += `<rect x="${(X(i) - step * 0.24).toFixed(1)}" y="${(padT + ch - bh).toFixed(1)}" width="${(step * 0.48).toFixed(1)}" height="${bh.toFixed(1)}" fill="currentColor" fill-opacity="0.055"/>`;
+  });
+
+  const selMeta = SLOT_METAS.find(x => x.key === selectedSlotKey);
+  let vline = "";
+  if (selMeta) {
+    const x = X(selMeta.dayIdx).toFixed(1);
+    vline = `<line x1="${x}" y1="${padT}" x2="${x}" y2="${padT + ch}" stroke="currentColor" stroke-opacity="0.32" stroke-width="1" stroke-dasharray="4 5"/>`;
+  }
+
+  const lineOf = (type, color) => {
+    const pts = [];
+    days.forEach((day, i) => {
+      const o = day[type];
+      if (o) pts.push(`${X(i).toFixed(1)},${Y(o.score).toFixed(1)}`);
+    });
+    if (pts.length < 2) return "";
+    return `<polyline points="${pts.join(" ")}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  };
+
+  let points = "";
+  days.forEach((day, i) => {
+    ["am", "pm"].forEach((type) => {
+      const o = day[type];
+      if (!o) return;
+      const x = X(i), y = Y(o.score);
+      const color = type === "am" ? TREND_AM_COLOR : TREND_PM_COLOR;
+      const isActive = o.meta.key === selectedSlotKey;
+      if (isActive) {
+        points += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="10" fill="none" stroke="${color}" stroke-opacity="0.45" stroke-width="2"/>`;
+      }
+      points += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${isActive ? 5.4 : 4}" fill="${o.grade.hex}" stroke="currentColor" stroke-opacity="0.4" stroke-width="1.1" pointer-events="none"/>`;
+      points += `<circle class="trend-hit" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="14" fill="transparent" onclick="selectSlot('${o.meta.key}')"><title>${day.label} ${o.meta.typeName} · ${o.score}分 · ${o.grade.name}</title></circle>`;
+    });
+  });
+
+  let bestMark = "";
+  if (best) {
+    const bx = X(best.meta.dayIdx), by = Y(best.score);
+    bestMark = `<text x="${bx.toFixed(1)}" y="${(by - 15).toFixed(1)}" text-anchor="middle" font-size="13" fill="${best.grade.hex}" stroke="none">★ ${best.score}</text>`;
+  }
+
+  let labels = "";
+  days.forEach((day, i) => {
+    const x = X(i);
+    const bestOfDay = (day.am && day.pm)
+      ? (day.am.score >= day.pm.score ? day.am.meta.key : day.pm.meta.key)
+      : ((day.am || day.pm) ? (day.am || day.pm).meta.key : "");
+    const click = bestOfDay ? ` class="trend-hit" onclick="selectSlot('${bestOfDay}')"` : "";
+    labels += `<g${click}><text x="${x.toFixed(1)}" y="${TREND_H - padB + 20}" text-anchor="middle" font-size="12" fill="currentColor" fill-opacity="0.86">${day.label}</text>`;
+    labels += `<text x="${x.toFixed(1)}" y="${TREND_H - padB + 36}" text-anchor="middle" font-size="10.5" fill="currentColor" fill-opacity="0.5">${day.dateStr}</text></g>`;
+  });
+
+  wrap.innerHTML = `<svg viewBox="0 0 ${TREND_W} ${TREND_H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="七日霞光指数趋势图">`
+    + grid + bars + vline
+    + lineOf("am", TREND_AM_COLOR) + lineOf("pm", TREND_PM_COLOR)
+    + points + bestMark + labels
+    + `</svg>`;
+
+  const titleEl = document.getElementById("trendBestText");
+  if (titleEl) {
+    titleEl.innerText = best
+      ? `本周最佳：${best.meta.dayLabel} (${best.meta.dateStr}) · ${best.meta.typeName} ${best.score} 分 · L${best.grade.level} ${best.grade.name}`
+      : "--";
+  }
+}
+
 function updateActiveSlotView() {
   if (!currentCityData) return;
   const slotMeta = SLOT_METAS.find(m => m.key === selectedSlotKey) || SLOT_METAS[1];
@@ -958,55 +1033,23 @@ function updateActiveSlotView() {
   const evalRes = evaluateGlowBalanced(p, slotMeta.type);
   const sunTime = estimateSunTime(currentCityData.lon, slotMeta.type, currentCityData.tz);
 
-  document.getElementById("ro_gfs_h").innerText = p.gfs_h + "%";
-  document.getElementById("bar_gfs_h").style.width = p.gfs_h + "%";
-  document.getElementById("ro_gfs_m").innerText = p.gfs_m + "%";
-  document.getElementById("bar_gfs_m").style.width = p.gfs_m + "%";
-  document.getElementById("ro_gfs_l").innerText = p.gfs_l + "%";
-  document.getElementById("bar_gfs_l").style.width = p.gfs_l + "%";
-  document.getElementById("ro_rh").innerText    = p.rh + "%";
-  document.getElementById("bar_rh").style.width = p.rh + "%";
-
-  document.getElementById("ro_ec_h").innerText  = p.ec_h + "%";
-  document.getElementById("bar_ec_h").style.width = p.ec_h + "%";
-  document.getElementById("ro_ec_m").innerText  = p.ec_m + "%";
-  document.getElementById("bar_ec_m").style.width = p.ec_m + "%";
-  document.getElementById("ro_ec_l").innerText  = p.ec_l + "%";
-  document.getElementById("bar_ec_l").style.width = p.ec_l + "%";
-  document.getElementById("ro_aod").innerText   = Number(p.aod).toFixed(2);
-  document.getElementById("bar_aod").style.width = Math.min(100, (p.aod / 1.0) * 100) + "%";
-
-  document.getElementById("ro_rem100").innerText = p.rem_100 + "%";
-  document.getElementById("bar_rem100").style.width = p.rem_100 + "%";
-  document.getElementById("ro_rem250").innerText = p.rem_250 + "%";
-  document.getElementById("bar_rem250").style.width = p.rem_250 + "%";
-  document.getElementById("ro_rem400").innerText = p.rem_400 + "%";
-  document.getElementById("bar_rem400").style.width = p.rem_400 + "%";
-  document.getElementById("ro_eff_rem").innerText = evalRes.effectiveRemBlock.toFixed(1) + "%";
-  document.getElementById("rayBoxTitle").innerText =
-    slotMeta.type === "am" ? "三点光路有效阻断 (东向日出)" : "三点光路有效阻断 (西向日落)";
-
-  document.getElementById("fb_canvas").innerText = evalRes.canvasBase.toFixed(1) + "分";
-  document.getElementById("fb_canvas_sub").innerText = `有效受光云幕: ${Math.round(evalRes.effCover)}%`;
-  document.getElementById("fb_low").innerText = "×" + evalRes.localLowFactor.toFixed(2);
-  document.getElementById("fb_low_sub").innerText = `本地低云: ${Math.round(evalRes.lowC)}% (S型曲线)`;
-  document.getElementById("fb_ray").innerText = "×" + evalRes.rayFactor.toFixed(2);
-  document.getElementById("fb_ray_sub").innerText = `有效光路阻断: ${evalRes.effectiveRemBlock.toFixed(0)}%`;
-  document.getElementById("fb_env").innerText = "×" + evalRes.envFactor.toFixed(2);
-  document.getElementById("fb_env_sub").innerText = `AOD=${Number(p.aod).toFixed(2)} | 湿度=${p.rh}%`;
-  document.getElementById("fb_comb").innerText = "×" + evalRes.combinedTrans.toFixed(2);
-  document.getElementById("fb_comb_sub").innerText = `最终=${evalRes.canvasBase.toFixed(0)}×${evalRes.combinedTrans.toFixed(2)}`;
-
   document.getElementById("heroLocInfo").innerText = `📍 ${currentCityData.name} (${formatCoordText(currentCityData.lat, currentCityData.lon)})`;
   document.getElementById("heroSlotInfo").innerText = `${slotMeta.icon} ${slotMeta.dayLabel} (${slotMeta.dateStr}) · ${slotMeta.typeName}`;
-  document.getElementById("heroLightPathInfo").innerText = `☀️ 光路：${slotMeta.azimuthText}`;
-  document.getElementById("heroPeakTime").innerText = `最佳观赏窗口：当地时间 ${sunTime} 前后 20 分钟 (${p.updatedAt})`;
+  const sunInfo = slotSunInfo(slotMeta, currentCityData);
+  const lightEl = document.getElementById("heroLightPathInfo");
+  lightEl.innerText = `☀️ 光路：${sunInfo.text}`;
+  lightEl.title = `太阳高度角 ${sunInfo.altitude.toFixed(1)}°（${sunInfo.polar ? "极昼/极夜，按正午方位近似" : "日出/日落时刻"}）`;
+  document.getElementById("heroPeakTime").innerText = `最佳观赏窗口：当地时间 ${sunTime}`;
 
   const badge = document.getElementById("mainGradeBadge");
   badge.innerText = `L${evalRes.grade.level} · ${evalRes.grade.name}`;
   badge.style.backgroundColor = evalRes.grade.hex;
 
-  document.getElementById("mainScoreNum").innerHTML = `${evalRes.score} <small style="font-size:13px; color:#e2dbc9;">/ 100分</small>`;
+  const scoreEl = document.getElementById("mainScoreNum");
+  scoreEl.innerHTML = `${evalRes.score} <small style="font-size:13px; color:#e2dbc9;">/ 100分</small>`;
+  scoreEl.classList.remove("pop");
+  void scoreEl.offsetWidth;
+  scoreEl.classList.add("pop");
   document.getElementById("colorBiasText").innerText = evalRes.colorBias;
   document.getElementById("aodTagInfo").innerText = `AOD: ${Number(p.aod).toFixed(2)} | 湿度: ${p.rh}%`;
   document.getElementById("spectrumBar").style.background = evalRes.gradientCSS;
@@ -1235,11 +1278,17 @@ function render3PointRayCrossSection(ctx, w, h, evalRes, p, slotMeta) {
   ctx.fillText(`本地低云: ${Math.round(evalRes.lowC)}%`, obsX - 42, 149);
 }
 
-// ==================== 8. 视图切换与历史记录回看 ====================
+// ==================== 8. 视图切换与时段联动 ====================
 function selectSlot(slotKey) {
   selectedSlotKey = slotKey;
   renderForecastMatrix();
   updateActiveSlotView();
+  renderTrendChart();
+  // 双向联动：把当前时段对应的矩阵卡片横向滚动到可视区（桌面端 / 手机端一致）
+  try {
+    const card = document.querySelector(`.slot-card[data-key="${slotKey}"]`);
+    if (card && card.scrollIntoView) card.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+  } catch (e) {}
 }
 
 function setEventFilter(flt) {
@@ -1256,43 +1305,6 @@ function setCanvasMode(mode) {
   document.getElementById("view_sky").classList.toggle("active", mode === "sky");
   document.getElementById("view_path").classList.toggle("active", mode === "path");
   updateActiveSlotView();
-}
-
-function renderHistoryTable() {
-  const tbody = document.getElementById("historyTableBody");
-  document.getElementById("histCountText").innerText = `共 ${historyRecords.length} 条记录`;
-
-  tbody.innerHTML = historyRecords.map(item => `
-    <tr class="hist-row" onclick="replayHistoryItem(${item.id})">
-      <td style="color:var(--text-muted);">${item.batchTime}</td>
-      <td>${item.cityData.name}</td>
-      <td style="color:var(--text-muted);">${formatCoordText(item.cityData.lat, item.cityData.lon)}</td>
-      <td>${item.slotLabel}</td>
-      <td>
-        <span style="background:${item.res.grade.hex}; color:#fff; padding:2px 7px; border:1px solid var(--border-black);">
-          L${item.res.grade.level} ${item.res.grade.name}
-        </span>
-      </td>
-      <td>${item.res.score}</td>
-      <td style="color:var(--text-muted);">
-        ${Math.round(item.res.highC)}% / ${Math.round(item.res.midC)}% / ${Math.round(item.res.lowC)}%
-      </td>
-      <td style="color:var(--warn);">
-        ${item.params.rem_100}% / ${item.params.rem_250}% / ${item.params.rem_400}%
-      </td>
-      <td style="color:var(--positive);">${item.params.aod}</td>
-      <td>${item.res.colorBias}</td>
-    </tr>
-  `).join("");
-}
-
-function replayHistoryItem(id) {
-  const rec = historyRecords.find(r => r.id === id);
-  if (!rec) return;
-  currentCityData = JSON.parse(JSON.stringify(rec.cityData));
-  selectedSlotKey = rec.slotKey;
-  document.getElementById("cityInput").value = rec.query || currentCityData.name;
-  renderForecastDashboard();
 }
 
 function initStaticElements() {
@@ -1331,7 +1343,7 @@ function initStaticElements() {
       showEmptyOrErrorState(
         "🌇",
         "请输入或点选目标城市名称以获取火烧云预测",
-        "系统支持中国及全球各大洲主要城市中英文匹配，自动解析目标城市经纬度坐标，拉取后端固定的 GFS、ECMWF 云层数据及 CAMS 气溶胶参数，计算未来三天（今/明/后天）的朝霞与晚霞等级。",
+        "系统支持中国及全球各大洲主要城市中英文匹配，自动解析目标城市经纬度坐标，拉取后端固定的 GFS、ECMWF 云层数据及 CAMS 气溶胶参数，计算未来七天（7 天趋势）的朝霞与晚霞等级。",
         false
       );
     }
@@ -1339,6 +1351,631 @@ function initStaticElements() {
 }
 
 window.addEventListener("DOMContentLoaded", initStaticElements);
+
+// ==================== 9. 常用地点 / 收藏夹（localStorage: sunset-favorites） ====================
+/* 设计要点：
+ *  · 收藏时保存「精确 GPS 经纬度 + 时区 + 展示城市名 + 自定义别名」；
+ *  · 点击胶囊直接用保存的坐标拉模型（跳过地名解析，避免重名城市误匹配）；
+ *  · 收藏城市不写入 locatedCity，安卓提醒仍以真实定位位置为准。 */
+const FAV_KEY = "sunset-favorites";
+const FAV_LIMIT = 24;
+let favEditingId = null;
+
+function escapeHtmlText(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[ch]));
+}
+
+function readFavorites() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(FAV_KEY) || "[]");
+    if (!Array.isArray(arr)) return [];
+    return arr.filter((x) => x && typeof x.id === "string" && isFinite(x.lat) && isFinite(x.lon));
+  } catch (e) { return []; }
+}
+
+function writeFavorites(list) {
+  try { localStorage.setItem(FAV_KEY, JSON.stringify(list.slice(0, FAV_LIMIT))); } catch (e) {}
+  renderFavorites();
+}
+
+function favoriteId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function defaultAliasFor(city) {
+  const plain = String((city && city.name) || "").replace(/^[^·]*·/, "");
+  return plain || formatCoordText(city.lat, city.lon);
+}
+
+function showFavTip(msg) {
+  const tip = document.getElementById("favTip");
+  if (!tip) return;
+  tip.innerText = msg || "";
+  tip.style.display = msg ? "block" : "none";
+}
+
+function renderFavorites() {
+  const wrap = document.getElementById("favBarWrap");
+  const bar = document.getElementById("favBar");
+  const cnt = document.getElementById("favCountText");
+  if (!wrap || !bar) return;
+
+  const list = readFavorites();
+  wrap.style.display = list.length ? "block" : "none";
+  if (cnt) cnt.innerText = list.length ? `共 ${list.length} 个` : "";
+
+  const curLat = currentCityData ? currentCityData.lat : null;
+  const curLon = currentCityData ? currentCityData.lon : null;
+
+  bar.innerHTML = list.map((f) => {
+    const active = (curLat !== null && Math.abs(curLat - f.lat) < 1e-6 && Math.abs(curLon - f.lon) < 1e-6) ? " active" : "";
+    return `<div class="fav-chip${active}" data-id="${f.id}">`
+      + `<button type="button" class="fav-main" onclick="loadFavorite('${f.id}')" title="${escapeHtmlText(f.name || f.alias)}">`
+      + `<span>⭐ ${escapeHtmlText(f.alias)}</span></button>`
+      + `<button type="button" class="fav-op" onclick="editFavorite('${f.id}')" aria-label="编辑别名">✎</button>`
+      + `<button type="button" class="fav-op" onclick="deleteFavorite('${f.id}')" aria-label="删除地点">✕</button>`
+      + `</div>`;
+  }).join("");
+}
+
+function toggleFavoriteEditor() {
+  const ed = document.getElementById("favEditor");
+  if (!ed) return;
+  if (ed.classList.contains("open")) { cancelFavoriteEditor(); return; }
+  if (!currentCityData) {
+    showFavTip("请先查询地点（或使用定位）后再收藏当前地点。");
+    return;
+  }
+  favEditingId = null;
+  showFavTip("");
+  const input = document.getElementById("favAliasInput");
+  if (input) input.value = defaultAliasFor(currentCityData);
+  ed.classList.add("open");
+  if (input) { try { input.focus(); input.select(); } catch (e) {} }
+}
+
+function cancelFavoriteEditor() {
+  favEditingId = null;
+  const ed = document.getElementById("favEditor");
+  if (ed) ed.classList.remove("open");
+  showFavTip("");
+}
+
+function saveFavoriteAlias() {
+  if (!currentCityData) { showFavTip("请先查询地点后再收藏。"); return; }
+  const input = document.getElementById("favAliasInput");
+  const alias = ((input ? input.value : "") || "").trim() || defaultAliasFor(currentCityData);
+  const list = readFavorites();
+
+  if (favEditingId) {
+    const idx = list.findIndex((x) => x.id === favEditingId);
+    if (idx >= 0) list[idx].alias = alias;
+  } else {
+    const same = list.find((x) => Math.abs(x.lat - currentCityData.lat) < 1e-6 && Math.abs(x.lon - currentCityData.lon) < 1e-6);
+    if (same) {
+      same.alias = alias;
+    } else {
+      list.unshift({
+        id: favoriteId(),
+        alias,
+        name: currentCityData.name,
+        lat: currentCityData.lat,
+        lon: currentCityData.lon,
+        tz: currentCityData.tz,
+        createdAt: Date.now()
+      });
+    }
+  }
+
+  writeFavorites(list);
+  cancelFavoriteEditor();
+  showFavTip("已收藏，可在搜索栏下方快捷胶囊中直接调用。");
+  setTimeout(() => { showFavTip(""); }, 2600);
+}
+
+function loadFavorite(id) {
+  const f = readFavorites().find((x) => x.id === id);
+  if (!f) return;
+  const display = f.name || f.alias;
+  const input = document.getElementById("cityInput");
+  if (input) input.value = display;
+  cancelFavoriteEditor();
+  // 第三个参数 false：收藏城市不写入「定位城市」，避免覆盖安卓提醒的定位位置
+  handleCitySearch(undefined, {
+    name: display,
+    lat: Number(f.lat),
+    lon: Number(f.lon),
+    tz: (typeof f.tz === "number") ? f.tz : Math.round(Number(f.lon) / 15)
+  }, false);
+}
+
+function editFavorite(id) {
+  const f = readFavorites().find((x) => x.id === id);
+  if (!f) return;
+  favEditingId = id;
+  const input = document.getElementById("favAliasInput");
+  const ed = document.getElementById("favEditor");
+  if (input) input.value = f.alias;
+  if (ed) ed.classList.add("open");
+  showFavTip("正在编辑地点别名，保存后立即生效。");
+  if (input) { try { input.focus(); input.select(); } catch (e) {} }
+}
+
+function deleteFavorite(id) {
+  if (favEditingId === id) cancelFavoriteEditor();
+  const chip = document.querySelector(`.fav-chip[data-id="${id}"]`);
+  const commit = function () {
+    writeFavorites(readFavorites().filter((x) => x.id !== id));
+  };
+  if (!chip) { commit(); return; }
+  // 先播放收起动效，再写回 localStorage 并重渲染
+  chip.classList.add("is-removing");
+  setTimeout(commit, 175);
+}
+
+// ==================== 10. 霞光签海报（原生 Canvas 离线绘制，无外部库） ====================
+const POSTER_RATIOS = { "9:16": { w: 1080, h: 1920 }, "4:5": { w: 1080, h: 1350 } };
+const POSTER_FONT = '"Noto Serif SC","Noto Serif CJK SC","Source Han Serif SC","Songti SC","STSong","SimSun",serif';
+const POSTER_NUM_FONT = '"Cormorant Garamond","Georgia","Times New Roman",serif';
+const POSTER_SKY_POS = [0, 0.18, 0.36, 0.54, 0.7, 0.85, 1];
+const POSTER_SKY = {
+  pm: {
+    big: ["#0d0a26", "#2a1450", "#6a1f69", "#c1305a", "#f0643a", "#ffb04a", "#ffe0a0"],
+    mid: ["#101830", "#2c2a63", "#76407f", "#c85d73", "#ee8f58", "#fbc17e", "#ffe3b3"],
+    small: ["#1c2744", "#33406e", "#5f6a9a", "#a98ba4", "#e0a99c", "#f5cfae", "#fdeed4"]
+  },
+  am: {
+    big: ["#141c46", "#3a3478", "#8a3f86", "#d9547a", "#f78a5a", "#ffc070", "#fff0c0"],
+    mid: ["#1a2a50", "#43508a", "#8c6296", "#e0809a", "#f6a878", "#ffd39a", "#fff2d2"],
+    small: ["#25365c", "#4a5a8c", "#7f86b0", "#c49fb4", "#eebfae", "#fbe0c0", "#fff6e4"]
+  }
+};
+let posterRatio = "9:16";
+let POSTER_DATA = { url: "", name: "" };
+const POSTER_SHARE_LINK = "https://sohpisacoder.github.io/sunset-forecast/";
+let posterFontsReady = false;
+
+function posterPad2(n) { return String(n).padStart(2, "0"); }
+
+/* 字体就绪：只等待文档里真实声明过、且尚未就绪的字体；
+   未声明的字体族 fonts.check() 直接返回 true，无需空等，避免首图被无谓推迟 900ms */
+async function posterEnsureFonts() {
+  if (posterFontsReady || typeof document === "undefined" || !document.fonts) return;
+  try {
+    const wanted = [
+      '500 40px "Noto Serif SC"',
+      '300 40px "Noto Serif SC"',
+      '300 40px "Cormorant Garamond"',
+      '500 40px "Songti SC"'
+    ].filter(function (spec) {
+      try { return !document.fonts.check(spec); } catch (e) { return false; }
+    });
+    if (!wanted.length) { posterFontsReady = true; return; }
+    await Promise.race([
+      Promise.allSettled(wanted.map(function (spec) { return document.fonts.load(spec); })),
+      new Promise(function (r) { setTimeout(r, 900); })
+    ]);
+  } catch (e) {}
+  posterFontsReady = true;
+}
+
+/* Canvas 没有 letter-spacing：逐字绘制并记录总宽，供右对齐与自动收窄使用 */
+function posterTrackWidth(ctx, text, size, trackingEm) {
+  const chars = String(text).split("");
+  let w = 0;
+  chars.forEach((ch) => { w += ctx.measureText(ch).width; });
+  return w + size * trackingEm * Math.max(0, chars.length - 1);
+}
+function posterDrawTracked(ctx, text, x, y, size, trackingEm, align) {
+  const chars = String(text).split("");
+  const gap = size * trackingEm;
+  let cx = (align === "right") ? x - posterTrackWidth(ctx, text, size, trackingEm) : x;
+  ctx.textAlign = "left";
+  chars.forEach((ch) => {
+    ctx.fillText(ch, cx, y);
+    cx += ctx.measureText(ch).width + gap;
+  });
+}
+
+/* ---- 颜色工具：统一转 rgb，支持 #hex / rgb() ---- */
+function posterRgb(color) {
+  const s = String(color || "").trim();
+  if (s.charAt(0) === "#") {
+    let h = s.slice(1);
+    if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+    const v = parseInt(h, 16);
+    return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+  }
+  const m = s.match(/(\d+(?:\.\d+)?)/g);
+  if (m && m.length >= 3) return [+m[0], +m[1], +m[2]];
+  return [255, 255, 255];
+}
+function posterMix(a, b, t) {
+  const A = posterRgb(a), B = posterRgb(b);
+  return `rgb(${Math.round(A[0] + (B[0] - A[0]) * t)},${Math.round(A[1] + (B[1] - A[1]) * t)},${Math.round(A[2] + (B[2] - A[2]) * t)})`;
+}
+/* 降饱和：向自身灰阶靠拢 */
+function posterDesat(color, t) {
+  const c = posterRgb(color);
+  const g = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+  return `rgb(${Math.round(c[0] + (g - c[0]) * t)},${Math.round(c[1] + (g - c[1]) * t)},${Math.round(c[2] + (g - c[2]) * t)})`;
+}
+
+/* 等级 → 配色档：大烧 / 中烧 / 微烧；更低等级沿用微烧并略微降饱和 */
+function posterSkyStops(level, type) {
+  const key = level >= 7 ? "big" : (level >= 5 ? "mid" : "small");
+  const pal = ((POSTER_SKY[type] || POSTER_SKY.pm)[key] || POSTER_SKY.pm.small).slice();
+  return level <= 1 ? pal.map((c) => posterDesat(c, 0.18)) : pal;
+}
+
+/* 天空：7 色标垂直线性渐变；deepen 仅加深自下而上第 3、4 个色标 */
+function posterPaintSky(ctx, W, H, stops, deepen) {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  stops.forEach((c, i) => {
+    const col = (deepen > 0 && (i === 3 || i === 4)) ? posterMix(c, "#000000", deepen) : c;
+    g.addColorStop(POSTER_SKY_POS[i], col);
+  });
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+/* 地平线柔光：椭圆径向渐变，圆心 (50%,100%)，rx 95%W / ry 42%H，取第 6 个色标 */
+function posterPaintGlow(ctx, W, H, stops) {
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  ctx.globalAlpha = 0.55;
+  ctx.translate(W / 2, H);
+  ctx.scale(1, (0.42 * H) / (0.95 * W));
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 0.95 * W);
+  g.addColorStop(0, stops[5]);
+  g.addColorStop(0.74, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(-W, -0.95 * W, 2 * W, 0.95 * W);
+  ctx.restore();
+}
+
+/* 左下评分区域的平均亮度（用于白字可读性自检）：整块一次读回，避免多次 getImageData 的 GPU 回读开销 */
+function posterScoreLum(ctx, W, H, cqw) {
+  const x0 = Math.round(4 * cqw), y0 = Math.round(H - 34 * cqw);
+  const w = Math.max(1, Math.round(30 * cqw)), h = Math.max(1, Math.round(28 * cqw));
+  const data = ctx.getImageData(x0, y0, w, h).data;
+  let sum = 0, n = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    sum += (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) / 255;
+    n++;
+  }
+  return n ? sum / n : 0;
+}
+
+/* 数据缺失时清空预览，避免把上一个城市的旧图当成当前城市下载 / 分享 */
+function posterResetPreview() {
+  POSTER_DATA.url = "";
+  POSTER_DATA.name = "";
+  const img = document.getElementById("posterPreview");
+  if (img) img.removeAttribute("src");
+  const titleEl = document.getElementById("posterTitle");
+  if (titleEl) titleEl.innerText = "🖼 霞光签预览";
+}
+
+async function drawPoster() {
+  if (!currentCityData) { posterResetPreview(); return; }
+  await posterEnsureFonts();
+
+  const ratio = posterRatio;          // 等字体就绪后再取比例，避免快速切换时的竞态
+  const slotMeta = SLOT_METAS.find((m) => m.key === selectedSlotKey) || SLOT_METAS[1];
+  const p = currentCityData.slots[selectedSlotKey];
+  if (!p) { posterResetPreview(); return; }
+
+  const evalRes = evaluateGlowBalanced(p, slotMeta.type);
+  const sunTime = estimateSunTime(currentCityData.lon, slotMeta.type, currentCityData.tz);
+  const size = POSTER_RATIOS[ratio] || POSTER_RATIOS["9:16"];
+  const W = size.w, H = size.h;
+  const tall = (ratio === "9:16");
+  const cqw = W / 100;                // 以画布宽度为基准的排版单位
+  const padX = 9 * cqw;               // 左右安全边距 9cqw
+  const ink = "#fffaf2";
+  const grade = evalRes.grade;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+
+  /* ---- 1. 背景仅两层：天空 7 色标渐变 + 地平线柔光 ---- */
+  const stops = posterSkyStops(grade.level, slotMeta.type);
+  posterPaintSky(ctx, W, H, stops, 0);
+  posterPaintGlow(ctx, W, H, stops);
+  // 微烧等亮底：自检左下评分区亮度，必要时一次性加深自下而上第 3、4 个色标（结果确定）
+  if (posterScoreLum(ctx, W, H, cqw) > 0.72) {
+    posterPaintSky(ctx, W, H, stops, 0.18);
+    posterPaintGlow(ctx, W, H, stops);
+  }
+
+  /* ---- 2. 文字：城市 / 日期时段 / 等级大字 / 评分 + 最佳时间 ---- */
+  ctx.textBaseline = "alphabetic";
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
+  ctx.shadowColor = "rgba(24,10,40,0.22)";
+  ctx.shadowBlur = 4 * cqw;
+
+  const dayObj = new Date();
+  dayObj.setDate(dayObj.getDate() + slotMeta.dayIdx);
+
+  // 城市：左上，左边距 9cqw、顶部 10cqw，5.6cqw / 500 / 字距 .32em
+  let citySize = 5.6 * cqw;
+  const cityMaxW = W - padX * 2 - 34 * cqw;   // 给右侧竖排大字留出空间
+  ctx.font = `500 ${citySize}px ${POSTER_FONT}`;
+  while (citySize > 2.6 * cqw && posterTrackWidth(ctx, currentCityData.name, citySize, 0.32) > cityMaxW) {
+    citySize -= 0.1 * cqw;
+    ctx.font = `500 ${citySize}px ${POSTER_FONT}`;
+  }
+  ctx.fillStyle = ink;
+  posterDrawTracked(ctx, currentCityData.name, padX, 10 * cqw + citySize * 0.88, citySize, 0.32, "left");
+
+  // 日期 + 时段：城市下方 2.2cqw，2.9cqw / 300 / 字距 .24em / 不透明度 .9
+  const dateSize = 2.9 * cqw;
+  ctx.globalAlpha = 0.9;
+  ctx.font = `300 ${dateSize}px ${POSTER_FONT}`;
+  posterDrawTracked(
+    ctx,
+    `${dayObj.getMonth() + 1}月${dayObj.getDate()}日 ${slotMeta.typeName}`,
+    padX,
+    10 * cqw + citySize + 2.2 * cqw + dateSize * 0.88,
+    dateSize, 0.24, "left"
+  );
+  ctx.globalAlpha = 1;
+
+  // 等级大字：竖排逐字，右上，34cqw / 500 / 字距 .06em / 右边距 9cqw
+  const word = String(grade.name || "").split("");
+  const wordTop = (tall ? 30 : 16) * cqw;
+  let charSize = 34 * cqw;
+  const wordAvail = H - wordTop - 9 * cqw;
+  if (word.length * charSize * 1.06 > wordAvail) {
+    charSize = wordAvail / Math.max(1, word.length * 1.06);   // 超长等级名兜底，常规两字不受影响
+  }
+  ctx.font = `500 ${charSize}px ${POSTER_FONT}`;
+  ctx.shadowColor = "rgba(24,10,40,0.18)";   // 大字阴影 alpha 降为 .18
+  let wy = wordTop + charSize * 0.88;
+  word.forEach((ch) => {
+    posterDrawTracked(ctx, ch, W - padX, wy, charSize, 0.06, "right");
+    wy += charSize * 1.06;
+  });
+
+  // 评分 + 最佳时间：左下，评分块整体底边距 14cqw（9:16）/ 12cqw（4:5）
+  ctx.shadowColor = "rgba(24,10,40,0.22)";
+  const timeSize = 3.2 * cqw;
+  const timeBase = H - (tall ? 14 : 12) * cqw;
+  const scoreBase = timeBase - 6 * cqw;      // 时间在评分下方 3.2cqw
+  ctx.fillStyle = ink;
+  ctx.font = `300 ${20 * cqw}px ${POSTER_NUM_FONT}`;
+  ctx.textAlign = "left";
+  ctx.fillText(String(evalRes.score), padX, scoreBase);
+
+  ctx.globalAlpha = 0.94;
+  ctx.font = `300 ${timeSize}px ${POSTER_FONT}`;
+  posterDrawTracked(ctx, `${sunTime} 最佳`, padX, timeBase, timeSize, 0.26, "left");
+  ctx.globalAlpha = 1;
+
+  /* ---- 3. 输出：dataURL 预览 + 下载 ---- */
+  POSTER_DATA.url = canvas.toDataURL("image/png");
+  const safeCity = String(currentCityData.name || "city").replace(/[\\/:*?"<>|\s]/g, "_").slice(0, 24);
+  const fullDate = `${dayObj.getFullYear()}-${posterPad2(dayObj.getMonth() + 1)}-${posterPad2(dayObj.getDate())}`;
+  POSTER_DATA.name = `霞光签_${safeCity}_${fullDate}_${slotMeta.typeName}_${ratio.replace(":", "-")}.png`;
+
+  const img = document.getElementById("posterPreview");
+  if (img) img.src = POSTER_DATA.url;
+  const titleEl = document.getElementById("posterTitle");
+  if (titleEl) titleEl.innerText = `🖼 霞光签 · ${currentCityData.name}`;
+}
+
+function syncPosterRatioBtns() {
+  const a = document.getElementById("ratio_916");
+  const b = document.getElementById("ratio_45");
+  if (a) a.classList.toggle("active", posterRatio === "9:16");
+  if (b) b.classList.toggle("active", posterRatio === "4:5");
+}
+
+function showPosterTip(msg) {
+  const tip = document.getElementById("posterTip");
+  if (!tip) return;
+  tip.innerText = msg;
+  tip.classList.add("show");
+  clearTimeout(showPosterTip._t);
+  showPosterTip._t = setTimeout(function () { tip.classList.remove("show"); }, 2200);
+}
+
+async function generatePoster() {
+  if (!currentCityData) {
+    showPosterTip("请先查询城市后再生成霞光签。");
+    return;
+  }
+  posterRatio = "9:16";
+  syncPosterRatioBtns();
+  const modal = document.getElementById("posterModal");
+  if (modal) {
+    modal.classList.remove("is-closing");
+    modal.classList.add("open");
+    modal.setAttribute("aria-hidden", "false");
+    modal.scrollTop = 0;
+  }
+  await drawPoster();   // 字体就绪后再绘制，避免首次导出回退成默认字体
+}
+
+async function setPosterRatio(ratio) {
+  if (!POSTER_RATIOS[ratio]) return;
+  posterRatio = ratio;
+  syncPosterRatioBtns();
+  await drawPoster();
+  const img = document.getElementById("posterPreview");
+  if (img) {
+    img.classList.remove("swap");
+    void img.offsetWidth;
+    img.classList.add("swap");
+  }
+}
+
+function closePoster() {
+  const modal = document.getElementById("posterModal");
+  if (!modal || !modal.classList.contains("open") || modal.classList.contains("is-closing")) return;
+  modal.classList.add("is-closing");
+  modal.setAttribute("aria-hidden", "true");
+  setTimeout(function () {
+    modal.classList.remove("open");
+    modal.classList.remove("is-closing");
+  }, 195);
+}
+
+/* 取原生桥：仅安卓壳内存在 AndroidInterface */
+function posterBridge() {
+  try {
+    if (typeof AndroidInterface !== "undefined" && AndroidInterface) return AndroidInterface;
+  } catch (e) {}
+  return null;
+}
+
+/* 保存 / 下载 PNG：安卓走 MediaStore，浏览器走 <a download> */
+function downloadPoster(ev) {
+  if (!POSTER_DATA.url) { if (ev && ev.preventDefault) ev.preventDefault(); return; }
+  const br = posterBridge();
+  if (br && typeof br.savePosterImage === "function") {
+    if (ev && ev.preventDefault) ev.preventDefault();
+    let res = "";
+    try { res = br.savePosterImage(POSTER_DATA.url, POSTER_DATA.name); }
+    catch (e) { res = "ERR"; }
+    const ok = res && String(res).indexOf("ERR") !== 0;
+    showPosterTip(ok ? "✅ 已保存到相册：Pictures/SunsetForecast" : "自动保存失败，请长按上方图片手动保存到相册。");
+    return;
+  }
+  const a = document.createElement("a");
+  a.href = POSTER_DATA.url;
+  a.download = POSTER_DATA.name || "霞光签.png";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  showPosterTip("已开始下载 PNG。");
+}
+
+/* 复制分享链接（固定指向 GitHub Pages，网页端与安卓端一致） */
+function copyPosterLink() {
+  const link = POSTER_SHARE_LINK;
+  const done = function () { showPosterTip("链接已复制，可粘贴到微信 / 小红书分享。"); };
+  const fallback = function () {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = link;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      if (ok) done();
+      else showPosterTip("复制失败，请手动复制地址栏链接。");
+    } catch (e) {
+      showPosterTip("复制失败，请手动复制地址栏链接。");
+    }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(link).then(done).catch(fallback);
+  } else {
+    fallback();
+  }
+}
+
+/* dataURL → Blob：同步解码，不经过 fetch，保证分享调用仍在用户手势内 */
+function posterDataUrlToBlob(dataUrl) {
+  const comma = String(dataUrl || "").indexOf(",");
+  if (comma < 0) return null;
+  const bin = atob(dataUrl.slice(comma + 1));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: "image/png" });
+}
+
+/* 分享到微信 / 小红书：安卓走原生分享（缓存目录 + FileProvider，不写相册），网页走系统分享面板 */
+async function sharePoster(target) {
+  if (!POSTER_DATA.url) { showPosterTip("请先生成霞光签。"); return; }
+  const name = POSTER_DATA.name || "霞光签.png";
+  const br = posterBridge();
+  if (br && typeof br.sharePosterImage === "function") {
+    let res = "";
+    try { res = br.sharePosterImage(POSTER_DATA.url, name, target); }
+    catch (e) { res = "ERR"; }
+    const ok = res && String(res).indexOf("ERR") !== 0;
+    showPosterTip(ok
+      ? (target === "xhs" ? "正在打开小红书发布编辑…" : "正在打开微信好友列表…")
+      : "分享失败：未找到可用的应用，请长按图片手动分享。");
+    return;
+  }
+  // 浏览器端：同步解码 dataURL 后再调 navigator.share，
+  // 避免 await fetch 丢失用户手势（Safari 会因此抛 NotAllowedError）
+  try {
+    const blob = posterDataUrlToBlob(POSTER_DATA.url);
+    if (blob && navigator.canShare && typeof File === "function") {
+      const file = new File([blob], name, { type: "image/png" });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: "霞光签" });
+        return;
+      }
+    }
+  } catch (e) {
+    if (e && e.name === "AbortError") return;   // 用户在系统分享面板里取消，不提示
+  }
+  showPosterTip("当前浏览器不支持直接分享图片，请长按上方图片保存后发送。");
+}
+
+/* 客户端判定：手机 / 平板之外的桌面浏览器隐藏微信、小红书按钮 */
+function isMobileClient() {
+  const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+  if (/Android|iPhone|iPod|iPad|HarmonyOS|Mobile|Windows Phone/i.test(ua)) return true;
+  // iPadOS 13+ 的 UA 伪装成 Macintosh，用触点数量兜底
+  if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return true;
+  return false;
+}
+
+/* ---------------- 收藏夹 / 海报的初始化绑定 ---------------- */
+window.addEventListener("DOMContentLoaded", function () {
+  if (document.documentElement && !isMobileClient()) {
+    document.documentElement.classList.add("is-pc");
+  }
+  renderFavorites();
+
+  // 悬浮分享按钮：静止时接近透明，页面滚动时逐渐显现，停止滚动后再次淡出
+  const fab = document.getElementById("posterFab");
+  if (fab) {
+    let fabTimer = null;
+    const revealFab = function () {
+      fab.classList.add("is-visible");
+      clearTimeout(fabTimer);
+      fabTimer = setTimeout(function () { fab.classList.remove("is-visible"); }, 1100);
+    };
+    window.addEventListener("scroll", revealFab, { passive: true });
+    window.addEventListener("touchmove", revealFab, { passive: true });
+  }
+
+  const aliasInput = document.getElementById("favAliasInput");
+  if (aliasInput) {
+    aliasInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        saveFavoriteAlias();
+      }
+    });
+  }
+
+  const modal = document.getElementById("posterModal");
+  if (modal) {
+    modal.addEventListener("click", function (e) {
+      if (e.target === modal) closePoster();
+    });
+  }
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") closePoster();
+  });
+});
 
 /* ---------------- 首屏骨架：初始化完成后淡出并从 DOM 移除 ---------------- */
 (function () {
@@ -1453,15 +2090,17 @@ window.addEventListener("DOMContentLoaded", initStaticElements);
         return !!(target.closest && target.closest("input, textarea, select, [contenteditable='true']"));
       }
 
-      // 1. 右键菜单：输入框放行（右键粘贴可用），其余屏蔽
+      // 1. 右键菜单：输入框放行（右键粘贴可用），霞光签预览区放行（长按保存图片），其余屏蔽
       document.addEventListener("contextmenu", function (e) {
         if (isEditable(e.target)) return;
+        if (e.target && e.target.closest && e.target.closest("#posterModal")) return;
         e.preventDefault();
       }, true);
 
       // 2. 文本选中：输入框放行，其余阻止（不拦截 Ctrl+A 等键盘操作，避免影响无障碍读屏）
       document.addEventListener("selectstart", function (e) {
         if (isEditable(e.target)) return;
+        if (e.target && e.target.closest && e.target.closest("#posterModal")) return;
         e.preventDefault();
       }, true);
 
@@ -1559,7 +2198,7 @@ window.addEventListener("DOMContentLoaded", initStaticElements);
           var inputEl = document.getElementById("cityInput");
           if (!inputEl) throw new Error("city input not found");
           inputEl.value = city.name;
-          if (typeof handleCitySearch === "function") return handleCitySearch(undefined, city);
+          if (typeof handleCitySearch === "function") return handleCitySearch(undefined, city, true);
           throw new Error("handleCitySearch not available");
         } catch (e) {
           return Promise.reject(e);
@@ -1742,6 +2381,8 @@ window.addEventListener("DOMContentLoaded", initStaticElements);
 
     for (var i = 0; i < SLOT_METAS.length; i++) {
       var m = SLOT_METAS[i];
+      // v2.0：趋势扩展到 7 天，但系统提醒仍只推送前 3 天，避免长期占用闹钟
+      if (m.dayIdx >= NOTIFY_DAYS) break;
       var p = city.slots[m.key];
       if (!p) continue;
 
@@ -1753,6 +2394,7 @@ window.addEventListener("DOMContentLoaded", initStaticElements);
       var g = gradeOf(res.score);
       // 通知文案里的城市名去掉「国家·」前缀（示例：今日上海市的晚霞为中烧。）
       var cityPlain = String(city.name || "").replace(/^[^·]*·/, "");
+      var dayWord = m.dayIdx === 0 ? "今日" : (m.dayIdx === 1 ? "明日" : "后天");
       list.push({
         key:     m.key,
         time:    when,
@@ -1762,7 +2404,7 @@ window.addEventListener("DOMContentLoaded", initStaticElements);
         city:    city.name,
         slot:    m.dayLabel + "·" + m.typeName,
         title:   m.typeName + " · " + g.name,
-        content: "今日" + cityPlain + "的" + m.typeName + "为" + g.name + "。"
+        content: dayWord + cityPlain + "的" + m.typeName + "为" + g.name + "。"
       });
     }
 
@@ -1929,7 +2571,7 @@ window.addEventListener("DOMContentLoaded", initStaticElements);
       });
     }).then(function (city) {
       input.value = city.name;
-      return handleCitySearch(undefined, city);
+      return handleCitySearch(undefined, city, true);
     }).then(function () {
       headlessReport({
         ok:    true,

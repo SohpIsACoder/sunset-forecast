@@ -1,0 +1,28 @@
+{
+  "name": "Sohp的火烧云预报系统",
+  "short_name": "火烧云预报",
+  "description": "朝霞 / 晚霞火烧云物理量化预报：七日趋势、机位收藏、霞光签海报。",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f7f4ec",
+  "theme_color": "#f7f4ec",
+  "categories": ["weather", "utilities"],
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

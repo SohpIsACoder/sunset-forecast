@@ -7,6 +7,13 @@
 <title>Sohp的火烧云预报系统</title>
 <link rel="icon" type="image/png" href="icon.png" />
 <link rel="apple-touch-icon" href="icon.png" />
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#f7f4ec" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#14120f" media="(prefers-color-scheme: dark)" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="火烧云预报" />
+<script src="algorithm.js"></script>
 <script src="app.js"></script>
 <style>
     :root {
@@ -56,7 +63,6 @@
     :root[data-theme="dark"] .seg-btn.active { background: #3d3428; }
     :root[data-theme="dark"] .slot-card.active { background: #3a3226; }
     :root[data-theme="dark"] .grade-chip.current { background: #3d3428; }
-    :root[data-theme="dark"] th { background: #332b21; }
     :root[data-theme="dark"] .hero-meta { background: rgba(20, 18, 15, 0.92); }
     :root[data-theme="dark"] .color-bias-card { background: rgba(20, 18, 15, 0.94); }
     :root[data-theme="dark"] .hero-box { background: #0f0e0c; }
@@ -492,19 +498,36 @@
       color: var(--text-main);
     }
 
-    /* 3日 × 朝霞/晚霞 六宫格矩阵 */
+    /* 7天 × 朝霞/晚霞 横向滚动卡片组（手机端可平滑左右滑动） */
     .forecast-matrix {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 14px;
+      display: flex;
+      gap: 12px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      scroll-snap-type: x mandatory;
+      scroll-behavior: smooth;
+      -webkit-overflow-scrolling: touch;
+      padding: 2px 2px 10px;
+      scrollbar-width: thin;
     }
+    .forecast-matrix::-webkit-scrollbar { height: 6px; }
+    .forecast-matrix::-webkit-scrollbar-thumb {
+      background: var(--border-black);
+      opacity: 0.4;
+    }
+    .forecast-matrix::-webkit-scrollbar-track { background: var(--surface-sub); }
     @media (max-width: 780px) {
-      .forecast-matrix { grid-template-columns: 1fr; }
+      .forecast-matrix { gap: 10px; }
     }
     .day-col {
+      flex: 0 0 196px;
+      scroll-snap-align: start;
       background: var(--surface-sub);
       border: 1px solid var(--border-black);
       padding: 14px;
+    }
+    @media (max-width: 600px) {
+      .day-col { flex: 0 0 74%; }
     }
     .day-header {
       font-size: 13.5px;
@@ -518,7 +541,7 @@
     }
     .day-slots {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr;
       gap: 10px;
     }
     .day-slots.single-col {
@@ -639,42 +662,6 @@
       border: 1px solid var(--border-black);
     }
 
-    /* 黄金平衡 5 项因子拆解面板 */
-    .formula-bar {
-      display: grid;
-      grid-template-columns: repeat(5, 1fr);
-      gap: 10px;
-      margin: 16px 0;
-      padding: 12px;
-      background: var(--surface-sub);
-      border: 1px solid var(--border-black);
-    }
-    @media (max-width: 780px) {
-      .formula-bar { grid-template-columns: repeat(2, 1fr); }
-    }
-    .f-item {
-      padding: 8px 10px;
-      background: var(--surface-main);
-      border: 1px solid var(--border-black);
-      font-size: 12px;
-    }
-    .f-label {
-      color: var(--text-muted);
-      font-size: 11.5px;
-      display: flex;
-      justify-content: space-between;
-    }
-    .f-val {
-      font-size: 15px;
-      color: var(--text-main);
-      margin-top: 3px;
-    }
-    .f-sub {
-      font-size: 11px;
-      color: var(--text-muted);
-      margin-top: 2px;
-    }
-
     /* 等级游标与只读图例 */
     .scale-labels {
       display: flex;
@@ -734,76 +721,6 @@
       color: var(--text-main);
     }
 
-    /* 三栏只读气象模型参数面板 */
-    .models-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 14px;
-    }
-    @media (max-width: 820px) {
-      .models-grid { grid-template-columns: 1fr; }
-    }
-    .model-box {
-      background: var(--surface-sub);
-      border: 1px solid var(--border-black);
-      padding: 16px;
-    }
-    .ro-row { margin-bottom: 12px; }
-    .ro-row:last-child { margin-bottom: 0; }
-    .ro-head {
-      display: flex;
-      justify-content: space-between;
-      font-size: 12.5px;
-      margin-bottom: 4px;
-      color: var(--text-main);
-    }
-    .ro-val {
-      color: var(--text-main);
-    }
-    .ro-bar-bg {
-      height: 7px;
-      background: var(--surface-main);
-      border: 1px solid var(--border-black);
-      overflow: hidden;
-    }
-    .ro-bar-fill {
-      height: 100%;
-    }
-
-    /* 历史记录表 */
-    .table-wrap {
-      overflow-x: auto;
-      max-height: 240px;
-      overflow-y: auto;
-      border: 1px solid var(--border-black);
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12.5px;
-      text-align: left;
-    }
-    th {
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--border-black);
-      color: var(--text-main);
-      position: sticky;
-      top: 0;
-      background: #e9e3d4;
-    }
-    td {
-      padding: 9px 12px;
-      border-bottom: 1px solid var(--border-black);
-      color: var(--text-main);
-    }
-    tr.hist-row {
-      cursor: pointer;
-      background: var(--surface-main);
-    }
-    tr.hist-row:hover {
-      background: var(--surface-hover);
-    }
-
     /* ==================== 防复制 / 防文本选中 ==================== */
     /* 页面文本一律不可选中；输入类元素网开一面，保证城市搜索框可选中、粘贴、右键 */
     html,
@@ -822,6 +739,372 @@
       -ms-user-select: auto;
       user-select: auto;
       -webkit-touch-callout: default;
+    }
+    /* 霞光签预览图例外：允许长按呼出系统图片菜单，便于保存到相册 */
+    #posterPreview {
+      -webkit-user-select: auto;
+      -moz-user-select: auto;
+      -ms-user-select: auto;
+      user-select: auto;
+      -webkit-touch-callout: default;
+    }
+
+    /* ==================== 收藏地点（常用地点快捷胶囊栏）==================== */
+    .search-bar .btn-fav {
+      background: var(--surface-main);
+      border-style: dashed;
+    }
+    .search-bar .btn-fav:hover {
+      background: var(--surface-hover);
+      border-style: solid;
+    }
+    .fav-bar-wrap {
+      width: 100%;
+      max-width: 820px;
+      margin: 12px auto 0;
+      display: none;
+    }
+    .fav-label {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .fav-bar {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+      scroll-behavior: smooth;
+      scrollbar-width: thin;
+      padding-bottom: 4px;
+    }
+    .fav-bar::-webkit-scrollbar { height: 4px; }
+    .fav-bar::-webkit-scrollbar-thumb { background: var(--border-black); opacity: 0.35; }
+    .fav-chip {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      background: var(--surface-sub);
+      border: 1px solid var(--border-black);
+      white-space: nowrap;
+    }
+    .fav-chip.active {
+      background: #e5decb;
+      outline: 1px solid var(--border-black);
+    }
+    :root[data-theme="dark"] .fav-chip.active { background: #3a3226; }
+    .fav-main {
+      padding: 6px 10px;
+      font-size: 12.5px;
+      color: var(--text-main);
+      background: transparent;
+      border: 0;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+    .fav-main:hover { background: var(--surface-hover); }
+    .fav-op {
+      padding: 6px 7px;
+      font-size: 11px;
+      line-height: 1;
+      color: var(--text-muted);
+      background: transparent;
+      border: 0;
+      border-left: 1px solid var(--border-black);
+      cursor: pointer;
+    }
+    .fav-op:hover { background: var(--surface-hover); color: var(--text-main); }
+    .fav-editor {
+      width: 100%;
+      max-width: 820px;
+      margin: 12px auto 0;
+      display: none;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .fav-editor.open { display: flex; }
+    .fav-editor .city-input { flex: 1 1 220px; padding: 8px 12px; font-size: 13.5px; }
+    .fav-editor .btn { padding: 8px 16px; font-size: 13.5px; }
+    .fav-tip {
+      width: 100%;
+      max-width: 820px;
+      margin: 8px auto 0;
+      font-size: 11.5px;
+      color: var(--warn);
+      display: none;
+    }
+
+    /* ==================== 七日霞光趋势（原生 SVG）==================== */
+    .trend-wrap {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .trend-wrap svg {
+      display: block;
+      width: 100%;
+      min-width: 560px;
+      height: auto;
+    }
+    .trend-hit { cursor: pointer; }
+    .trend-legend {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .trend-legend i {
+      display: inline-block;
+      width: 16px;
+      height: 4px;
+      margin-right: 5px;
+      vertical-align: middle;
+      border: 1px solid var(--border-black);
+    }
+
+    /* ==================== 霞光签悬浮分享按钮 ==================== */
+    .poster-fab {
+      position: fixed;
+      right: 18px;
+      bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+      z-index: 88;
+      width: 52px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      color: var(--text-main);
+      background: var(--surface-main);
+      border: 1px solid var(--border-black);
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
+      cursor: pointer;
+      opacity: 0.12;
+      transition: opacity 0.5s ease, transform 0.25s ease;
+      touch-action: manipulation;
+    }
+    .poster-fab.is-visible,
+    .poster-fab:hover,
+    .poster-fab:focus-visible { opacity: 1; }
+    .poster-fab:active { transform: scale(0.94); }
+    .poster-fab svg { display: block; }
+    .poster-tip {
+      position: fixed;
+      right: 18px;
+      bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+      z-index: 130;
+      max-width: 230px;
+      padding: 7px 10px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-main);
+      background: var(--surface-main);
+      border: 1px solid var(--border-black);
+      display: none;
+    }
+    .poster-tip.show { display: block; }
+    .poster-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 120;
+      display: none;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 18px 12px 28px;
+      overflow-y: auto;
+      background: rgba(12, 11, 9, 0.76);
+    }
+    .poster-modal.open { display: flex; }
+    .poster-sheet {
+      width: 100%;
+      max-width: 460px;
+      background: var(--surface-main);
+      border: 1px solid var(--border-black);
+      padding: 14px;
+    }
+    .poster-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 10px;
+      margin-bottom: 12px;
+      border-bottom: 1px solid var(--border-black);
+      font-size: 14px;
+      color: var(--text-main);
+    }
+    .poster-close {
+      width: 30px;
+      height: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      font-size: 14px;
+      line-height: 1;
+      cursor: pointer;
+      color: var(--text-main);
+      background: transparent;
+      border: 1px solid var(--border-black);
+      border-radius: 50%;
+      transition: background-color 0.2s ease, transform 0.14s ease;
+    }
+    .poster-close:hover { background: var(--surface-hover); }
+    .poster-close:active { transform: scale(0.94); }
+    .poster-tools {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    .poster-tools .seg-btn {
+      border: 1px solid var(--border-black);
+    }
+    .poster-preview-box {
+      text-align: center;
+      background: var(--surface-sub);
+      border: 1px solid var(--border-black);
+      padding: 10px;
+    }
+    #posterPreview {
+      display: block;
+      margin: 0 auto;
+      width: auto;
+      max-width: 100%;
+      max-height: 58vh;
+      border: 1px solid var(--border-black);
+      background: #f7f4ec;
+    }
+    .poster-sharebar {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 18px;
+      margin-top: 16px;
+    }
+    .share-btn {
+      width: 46px;
+      height: 46px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      cursor: pointer;
+      color: var(--text-main);
+      background: var(--surface-main);
+      border: 1px solid var(--border-black);
+      border-radius: 50%;
+      transition: background-color 0.2s ease, color 0.2s ease, transform 0.14s ease;
+    }
+    .share-btn:hover { background: var(--surface-hover); }
+    .share-btn:active { transform: scale(0.94); }
+    .share-btn svg { display: block; }
+    /* 桌面端只保留「复制链接 / 下载」，微信与小红书按钮仅在手机端显示 */
+    html.is-pc .share-btn.is-mobile-only { display: none; }
+
+    @media (max-width: 600px) {
+      .poster-sheet { padding: 12px; }
+      #posterPreview { max-height: 52vh; }
+      .fav-editor .city-input, .fav-editor .btn { width: 100%; flex: 1 1 100%; }
+    }
+    /* ==================== 交互动效层（纯 CSS，原生实现，无外部库） ==================== */
+    @keyframes ui-fade-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    @keyframes ui-drop { from { opacity: 0; transform: translateY(-6px) scale(0.98); } to { opacity: 1; transform: none; } }
+    @keyframes ui-chip { from { opacity: 0; transform: translateX(-6px) scale(0.96); } to { opacity: 1; transform: none; } }
+    @keyframes ui-chip-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: scale(0.88); } }
+    @keyframes ui-sheet-up { from { opacity: 0; transform: translateY(24px) scale(0.985); } to { opacity: 1; transform: none; } }
+    @keyframes ui-sheet-down { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(18px) scale(0.99); } }
+    @keyframes ui-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes ui-backdrop-out { from { opacity: 1; } to { opacity: 0; } }
+    @keyframes ui-toast { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    @keyframes ui-swap { from { opacity: 0.3; transform: scale(0.994); } to { opacity: 1; transform: none; } }
+    @keyframes ui-score-pop { 0% { transform: scale(1); } 45% { transform: scale(1.1); } 100% { transform: scale(1); } }
+    @keyframes ui-card-enter { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: none; } }
+
+    /* 按钮类：统一的颜色过渡 + 轻微下压反馈 */
+    .btn, .seg-btn, .theme-gear, .theme-option, .notify-option, .loc-btn,
+    .fav-main, .fav-op, .poster-fab {
+      transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease,
+                  opacity 0.2s ease, transform 0.14s ease;
+    }
+    .btn:active, .seg-btn:active, .theme-gear:active, .loc-btn:active,
+    .fav-main:active, .fav-op:active {
+      transform: translateY(1px) scale(0.985);
+    }
+    .btn:disabled { transform: none; }
+
+    /* 输入框：聚焦时边框颜色平滑过渡 */
+    .city-input {
+      transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+    }
+    .city-input:focus { border-color: var(--accent); }
+
+    /* 卡片与胶囊：主题切换 / 状态切换的颜色过渡 */
+    .card, .day-col, .slot-card, .fav-chip, .matched-banner, .poster-sheet, .theme-panel {
+      transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease, opacity 0.25s ease;
+    }
+    .slot-card { transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease, transform 0.2s ease, opacity 0.2s ease; }
+
+    @media (hover: hover) and (pointer: fine) {
+      .slot-card:hover { transform: translateY(-1px); }
+      .fav-chip:hover { border-color: var(--text-muted); }
+      .day-col:hover { border-color: var(--text-muted); }
+      .trend-hit { transition: opacity 0.18s ease; }
+      .trend-hit:hover { opacity: 0.22; }
+    }
+
+    /* 列表/卡片入场：仅在切换城市重建时播放，点击时段不重播 */
+    #forecastMatrix.is-fresh .slot-card { animation: ui-card-enter 0.32s ease both; }
+    .fav-chip { animation: ui-chip 0.26s ease both; }
+    .fav-chip:nth-child(2) { animation-delay: 0.03s; }
+    .fav-chip:nth-child(3) { animation-delay: 0.06s; }
+    .fav-chip:nth-child(4) { animation-delay: 0.09s; }
+    .fav-chip:nth-child(5) { animation-delay: 0.12s; }
+    .fav-chip.is-removing { animation: ui-chip-out 0.18s ease both; }
+
+    /* 提示条 / 状态块 / 匹配横幅 */
+    .matched-banner { animation: ui-fade-up 0.38s ease both; }
+    #emptyOrErrorState { animation: ui-fade-up 0.35s ease both; }
+    .fav-tip, .poster-tip { animation: ui-toast 0.22s ease both; }
+
+    /* 主题设置面板 / 收藏编辑器：下拉展开 */
+    .theme-panel.open { animation: ui-drop 0.2s ease both; }
+    .fav-editor.open { animation: ui-drop 0.2s ease both; }
+
+    /* 霞光签 Modal：遮罩淡入 + 面板上浮；关闭时反向播放 */
+    .poster-modal.open { animation: ui-backdrop-in 0.24s ease both; }
+    .poster-modal.open .poster-sheet { animation: ui-sheet-up 0.32s cubic-bezier(0.22, 0.8, 0.3, 1) both; }
+    .poster-modal.is-closing { animation: ui-backdrop-out 0.19s ease both; }
+    .poster-modal.is-closing .poster-sheet { animation: ui-sheet-down 0.19s ease both; }
+
+    /* 海报比例切换：预览图柔和重绘 */
+    #posterPreview.swap { animation: ui-swap 0.32s ease both; }
+
+    /* 评分与游标 */
+    #mainScoreNum.pop { animation: ui-score-pop 0.45s ease; }
+    .scale-fill { transition: width 0.55s cubic-bezier(0.3, 0.8, 0.3, 1); }
+
+    /* 趋势图：仅在切换城市重建时整体淡入，点击数据点不重播 */
+    #trendWrap.is-fresh svg { animation: ui-fade-up 0.45s ease both; }
+
+    body { transition: background-color 0.35s ease, color 0.35s ease; }
+
+    /* 尊重系统「减少动态效果」：关闭全部动效 */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+      }
     }
   </style>
 </head>
@@ -902,30 +1185,57 @@ autocomplete="off"
 <button type="button" class="btn btn-primary" id="searchBtn" onclick="handleCitySearch()">
 🔍 匹配城市并生成预报
 </button>
+<button type="button" class="btn btn-fav" id="favAddBtn" onclick="toggleFavoriteEditor()">
+☆ 收藏地点
+</button>
 </div>
+<div class="fav-bar-wrap" id="favBarWrap">
+<div class="fav-label">
+<span>⭐ 常用地点</span>
+<span id="favCountText"></span>
+</div>
+<div class="fav-bar" id="favBar"></div>
+</div>
+<div class="fav-editor" id="favEditor">
+<input id="favAliasInput" class="city-input" type="text" maxlength="18" placeholder="给地点起个别名，例如：老家 / 公司楼顶" />
+<button type="button" class="btn btn-primary" onclick="saveFavoriteAlias()">保存地点</button>
+<button type="button" class="btn" onclick="cancelFavoriteEditor()">取消</button>
+</div>
+<div class="fav-tip" id="favTip"></div>
 <div class="matched-banner" id="matchedBanner">
 <span id="matchedCoordText">✓ 已匹配城市：--</span>
-<span id="matchedSyncTime" style="color:var(--positive);">数据源：GFS + ECMWF + CAMS</span>
+<span id="matchedSyncTime" style="color:var(--positive);display:none;"></span>
 </div>
 </div>
 <div id="emptyOrErrorState" class="state-placeholder">
 <div class="state-icon" id="stateIcon">🌇</div>
 <div class="state-title" id="stateTitle">请输入或点选目标城市名称以获取火烧云预测</div>
 <div class="state-desc" id="stateDesc">
-系统支持中国及全球各大洲主要城市中英文匹配，自动解析目标城市经纬度坐标，拉取后端固定的 GFS、ECMWF 云层数据及 CAMS 气溶胶参数，计算未来三天（今/明/后天）的朝霞与晚霞等级。
+系统支持中国及全球各大洲主要城市中英文匹配，自动解析目标城市经纬度坐标，拉取后端固定的 GFS、ECMWF 云层数据及 CAMS 气溶胶参数，计算未来七天（7 天趋势）的朝霞与晚霞等级。
 </div>
 </div>
 <div id="forecastContainer">
 <div class="card">
 <div class="card-title">
-<span id="matrixTitle">📅 未来三天 · 朝霞与晚霞预测矩阵 (点击卡片切换查看各时段详情)</span>
+<span id="matrixTitle">📅 未来七天 · 朝霞与晚霞预测矩阵</span>
 <div class="seg-group">
-<button type="button" class="seg-btn active" id="flt_all" onclick="setEventFilter('all')">全部时段 (6)</button>
+<button type="button" class="seg-btn active" id="flt_all" onclick="setEventFilter('all')">全部时段 (14)</button>
 <button type="button" class="seg-btn" id="flt_am" onclick="setEventFilter('am')">🌅 仅看朝霞</button>
 <button type="button" class="seg-btn" id="flt_pm" onclick="setEventFilter('pm')">🌇 仅看晚霞</button>
 </div>
 </div>
 <div class="forecast-matrix" id="forecastMatrix"></div>
+</div>
+<div class="card">
+<div class="card-title">
+<span>📈 七日霞光指数趋势</span>
+<span style="font-size:12px; color:var(--text-muted);" id="trendBestText">--</span>
+</div>
+<div class="trend-wrap" id="trendWrap"></div>
+<div class="trend-legend">
+<span><i style="background:#c8701a;"></i>🌅 朝霞指数</span>
+<span><i style="background:#9e1c3e;"></i>🌇 晚霞指数</span>
+</div>
 </div>
 <div class="card">
 <div class="hero-box">
@@ -966,132 +1276,76 @@ autocomplete="off"
 <div class="scale-fill" id="scaleFill" style="width: 0%;"></div>
 </div>
 <div class="grade-strip" id="gradeLegend"></div>
-<div class="formula-bar">
-<div class="f-item">
-<div class="f-label"><span>① 有效云幕基础分</span><span>中高云平权</span></div>
-<div class="f-val" id="fb_canvas">--</div>
-<div class="f-sub" id="fb_canvas_sub">有效受光云幕: --</div>
-</div>
-<div class="f-item">
-<div class="f-label"><span>② 本地低云透视率</span><span>S型缓降</span></div>
-<div class="f-val" id="fb_low">--</div>
-<div class="f-sub" id="fb_low_sub">0-25%云隙高宽容</div>
-</div>
-<div class="f-item">
-<div class="f-label"><span>③ 三点光路透射率</span><span>剔除高云误伤</span></div>
-<div class="f-val" id="fb_ray">--</div>
-<div class="f-sub" id="fb_ray_sub">仅算远端中低厚云</div>
-</div>
-<div class="f-item">
-<div class="f-label"><span>④ 云厚与AOD系数</span><span>日常良天免扣</span></div>
-<div class="f-val" id="fb_env">--</div>
-<div class="f-sub" id="fb_env_sub">厚度×AOD协同</div>
-</div>
-<div class="f-item">
-<div class="f-label"><span>⑤ 综合透光合成率</span><span>防连乘坍塌</span></div>
-<div class="f-val" id="fb_comb">--</div>
-<div class="f-sub" id="fb_comb_sub">主短板70%+均值30%</div>
-</div>
-</div>
 <div class="diag-banner" id="diagText">💡 物理成因诊断：--</div>
 </div>
-<div class="card">
-<div class="card-title">
-<span>📊 原始气象与气溶胶模型参数</span>
 </div>
-<div class="models-grid">
-<div class="model-box">
-<div style="display:flex; justify-content:space-between; margin-bottom:10px; font-size:13px; color:var(--text-main); border-bottom:1px solid var(--border-black); padding-bottom:6px;">
-<span>NOAA GFS 数值模型</span><span>固定权重 40%</span>
+<footer style="margin-top:26px; text-align:center; font-size:12px; color:var(--text-faint); letter-spacing:0.02em;">© 2026 Sohp All Rights Reserved. · v2.0</footer>
 </div>
-<div class="ro-row">
-<div class="ro-head"><span>高云量 (High Cloud >6km)</span><span class="ro-val" id="ro_gfs_h">--%</span></div>
-<div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_gfs_h" style="background:#5b7a8c; width:0%"></div></div>
+<button type="button" class="poster-fab" id="posterFab" onclick="generatePoster()" aria-label="生成霞光签" title="生成霞光签">
+<svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<circle cx="18" cy="5" r="2.6" />
+<circle cx="6" cy="12" r="2.6" />
+<circle cx="18" cy="19" r="2.6" />
+<path d="M8.4 10.8 15.6 6.9M8.4 13.2 15.6 17.1" />
+</svg>
+</button>
+<div class="poster-tip" id="posterTip"></div>
+<div class="poster-modal" id="posterModal" aria-hidden="true">
+<div class="poster-sheet" role="dialog" aria-label="霞光签预览">
+<div class="poster-head">
+<span id="posterTitle">🖼 霞光签预览</span>
+<button type="button" class="poster-close" onclick="closePoster()" aria-label="关闭">✕</button>
 </div>
-<div class="ro-row">
-<div class="ro-head"><span>中云量 (Mid Cloud 2-6km 主力云幕)</span><span class="ro-val" id="ro_gfs_m">--%</span></div>
-<div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_gfs_m" style="background:#3c5a6b; width:0%"></div></div>
+<div class="poster-tools">
+<button type="button" class="seg-btn active" id="ratio_916" onclick="setPosterRatio('9:16')">9:16 竖版</button>
+<button type="button" class="seg-btn" id="ratio_45" onclick="setPosterRatio('4:5')">4:5 方形</button>
 </div>
-<div class="ro-row">
-<div class="ro-head"><span style="color:var(--accent);">本地低云 (Low Cloud <2km)</span><span class="ro-val" id="ro_gfs_l">--%</span></div>
-<div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_gfs_l" style="background:#a34836; width:0%"></div></div>
+<div class="poster-preview-box">
+<img id="posterPreview" alt="霞光签海报预览" />
 </div>
-<div class="ro-row">
-<div class="ro-head"><span>近地面相对湿度 (2m RH)</span><span class="ro-val" id="ro_rh">--%</span></div>
-<div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_rh" style="background:#6d6875; width:0%"></div></div>
-</div>
-</div>
-<div class="model-box">
-<div style="display:flex; justify-content:space-between; margin-bottom:10px; font-size:13px; color:var(--text-main); border-bottom:1px solid var(--border-black); padding-bottom:6px;">
-<span>ECMWF (EC) 数值模型</span><span>固定权重 60%</span>
-</div>
-<div class="ro-row">
-<div class="ro-head"><span>高云量 (High Cloud >6km)</span><span class="ro-val" id="ro_ec_h">--%</span></div>
-<div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_ec_h" style="background:#4f775e; width:0%"></div></div>
-</div>
-<div class="ro-row">
-<div class="ro-head"><span>中云量 (Mid Cloud 2-6km 主力云幕)</span><span class="ro-val" id="ro_ec_m">--%</span></div>
-<div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_ec_m" style="background:#355943; width:0%"></div></div>
-</div>
-<div class="ro-row">
-<div class="ro-head"><span style="color:var(--accent);">本地低云 (Low Cloud <2km)</span><span class="ro-val" id="ro_ec_l">--%</span></div>
-<div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_ec_l" style="background:#a34836; width:0%"></div></div>
-</div>
-<div class="ro-row">
-<div class="ro-head"><span style="color:var(--warn);">550nm 气溶胶光学厚度 (AOD)</span><span class="ro-val" id="ro_aod">--</span></div>
-<div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_aod" style="background:#b5833d; width:0%"></div></div>
-</div>
-</div>
-<div class="model-box">
-<div style="display:flex; justify-content:space-between; margin-bottom:10px; font-size:13px; color:var(--text-main); border-bottom:1px solid var(--border-black); padding-bottom:6px;">
-<span id="rayBoxTitle">三点光路有效阻断率</span><span>剔除透光高云</span>
-</div>
-<div class="ro-row">
-<div class="ro-head"><span>100km 近端低/厚中云阻断</span><span class="ro-val" id="ro_rem100">--%</span></div>
-<div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_rem100" style="background:#b57c3d; width:0%"></div></div>
-</div>
-<div class="ro-row">
-<div class="ro-head"><span>250km 中端低/厚中云阻断</span><span class="ro-val" id="ro_rem250">--%</span></div>
-<div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_rem250" style="background:#a85d32; width:0%"></div></div>
-</div>
-<div class="ro-row">
-<div class="ro-head"><span>400km 远端浓密云团阻断</span><span class="ro-val" id="ro_rem400">--%</span></div>
-<div class="ro-bar-bg"><div class="ro-bar-fill" id="bar_rem400" style="background:#943d32; width:0%"></div></div>
-</div>
-<div style="margin-top:12px; padding:7px 10px; background:var(--surface-main); border:1px solid var(--border-black); font-size:12px; color:var(--text-main); display:flex; justify-content:space-between;">
-<span>综合光路有效阻断率：</span>
-<strong id="ro_eff_rem">--%</strong>
+<div class="poster-sharebar">
+<button type="button" class="share-btn is-mobile-only" onclick="sharePoster('wechat')" aria-label="分享到微信" title="分享到微信">
+<svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M9.2 4.4C5.5 4.4 2.5 6.6 2.5 9.4c0 1.5.9 2.9 2.3 3.8l-.6 2.1 2.4-1.1c.8.2 1.7.4 2.6.4" />
+<path d="M14.8 8.4c3.7 0 6.7 2.2 6.7 5 0 1.5-.9 2.9-2.3 3.8l.6 2.1-2.4-1.1c-.8.2-1.7.4-2.6.4-3.7 0-6.7-2.2-6.7-5s3-5.2 6.7-5.2z" />
+<circle cx="7.4" cy="8.1" r="0.85" fill="currentColor" stroke="none" />
+<circle cx="11" cy="8.1" r="0.85" fill="currentColor" stroke="none" />
+<circle cx="12.9" cy="12.4" r="0.75" fill="currentColor" stroke="none" />
+<circle cx="16.1" cy="12.4" r="0.75" fill="currentColor" stroke="none" />
+</svg>
+</button>
+<button type="button" class="share-btn is-mobile-only" onclick="sharePoster('xhs')" aria-label="分享到小红书" title="分享到小红书">
+<svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true">
+<rect x="3.2" y="3.2" width="17.6" height="17.6" rx="5" />
+<text x="12" y="16.4" text-anchor="middle" font-size="10.5" font-family="serif" fill="currentColor" stroke="none">红</text>
+</svg>
+</button>
+<button type="button" class="share-btn" onclick="copyPosterLink()" aria-label="复制链接" title="复制链接">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M10.6 13.4a4 4 0 0 0 5.7 0l2.6-2.6a4 4 0 0 0-5.7-5.7l-1.5 1.5" />
+<path d="M13.4 10.6a4 4 0 0 0-5.7 0l-2.6 2.6a4 4 0 0 0 5.7 5.7l1.5-1.5" />
+</svg>
+</button>
+<button type="button" class="share-btn" onclick="downloadPoster(event)" aria-label="下载图片" title="下载图片">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+<path d="M12 3.5v11" />
+<path d="M7.5 10 12 14.5 16.5 10" />
+<path d="M4.5 17.5v2.5h15v-2.5" />
+</svg>
+</button>
 </div>
 </div>
 </div>
-</div>
-<div class="card" style="margin-bottom: 0;">
-<div class="card-title">
-<span>🕒 已查询城市历史预测记录 (点击行可回看对应时段)</span>
-<span style="font-size:12px; color:var(--text-muted);" id="histCountText">共 0 条记录</span>
-</div>
-<div class="table-wrap">
-<table>
-<thead>
-<tr>
-<th>抓取批次</th>
-<th>城市名称</th>
-<th>地理坐标</th>
-<th>目标时段</th>
-<th>预测等级</th>
-<th>量化得分</th>
-<th>融合云量(高/中/低)</th>
-<th>光路阻断(100/250/400km)</th>
-<th>AOD</th>
-<th>色彩偏向</th>
-</tr>
-</thead>
-<tbody id="historyTableBody"></tbody>
-</table>
-</div>
-</div>
-</div>
-<footer style="margin-top:26px; text-align:center; font-size:12px; color:var(--text-faint); letter-spacing:0.02em;">© 2026 Sohp All Rights Reserved. · v1.2beta</footer>
-</div>
+<!-- PWA：注册 Service Worker（安卓 WebView 走加密资源回注，不注册） -->
+<script>
+(function () {
+  if (!("serviceWorker" in navigator)) return;
+  if (!/^https?:$/.test(location.protocol)) return;
+  if (location.hostname === "forecast.local") return;
+  window.addEventListener("load", function () {
+    navigator.serviceWorker.register("service-worker.js").catch(function () {});
+  });
+})();
+</script>
 </body>
 </html>
